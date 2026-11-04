@@ -3,6 +3,25 @@ import { api, fileToDataUrl } from './api.js';
 import { computeLayout, isRtl, loadImage, renderBanner } from './lib/render.js';
 import { FONT_CHOICES, loadFont } from './lib/fonts.js';
 import { downloadZip, encode, slug } from './lib/export.js';
+import JSZip from 'jszip';
+
+// Accept images and/or the plugin's ZIP; landscape (or the first image) becomes the master.
+async function artFromFiles(files) {
+  const out = [];
+  for (const f of files) {
+    if (/\.zip$/i.test(f.name) || f.type.includes('zip')) {
+      const zip = await JSZip.loadAsync(f);
+      for (const e of Object.values(zip.files)) {
+        const ext = (e.name.match(/\.(png|jpe?g|webp)$/i) || [])[1];
+        if (e.dir || !ext || e.name.includes('__MACOSX')) continue;
+        const b64 = await e.async('base64');
+        out.push({ name: e.name.split('/').pop(), url: `data:image/${ext.toLowerCase() === 'jpg' ? 'jpeg' : ext.toLowerCase()};base64,${b64}` });
+      }
+    } else if (f.type.startsWith('image/')) out.push({ name: f.name, url: await fileToDataUrl(f) });
+  }
+  out.sort((a, b) => (/landscape/i.test(b.name) ? 1 : 0) - (/landscape/i.test(a.name) ? 1 : 0));
+  return out.map((x) => x.url);
+}
 
 const flipSide = (s) => (s === 'left' ? 'right' : s === 'right' ? 'left' : s);
 
@@ -76,7 +95,8 @@ export default function App() {
       <main className={busy ? 'dim' : ''}>
         {step === 0 && <Brief brief={brief} setBrief={setBrief} onNext={getIdeas} demo={cfg?.demo} local={cfg?.local}
           onOwnArt={async (files) => {
-            const urls = await Promise.all([...files].map(fileToDataUrl));
+            const urls = await artFromFiles(files);
+            if (!urls.length) { setError('No images found. Upload PNG/JPG files or the ZIP from the ChatGPT plugin.'); return; }
             setHistory([urls[0]]); setVersion(0); setVariants(urls.slice(1)); setStep(2);
           }} />}
         {step === 1 && (
@@ -178,7 +198,7 @@ function Brief({ brief, setBrief, onNext, onOwnArt, demo, local }) {
   const ok = brief.business && brief.promotion && brief.message;
   const upload = (
     <label className={`button ${local ? 'primary-solid' : demo ? 'primary-ish' : ''}`}>{local ? 'Upload the artwork' : 'Start from my own artwork'}
-      <input id="art-upload" type="file" accept="image/*" multiple hidden onChange={(e) => e.target.files?.length && onOwnArt(e.target.files)} />
+      <input id="art-upload" type="file" accept="image/*,.zip,application/zip" multiple hidden onChange={(e) => e.target.files?.length && onOwnArt(e.target.files)} />
     </label>
   );
   if (local) {
@@ -187,7 +207,7 @@ function Brief({ brief, setBrief, onNext, onOwnArt, demo, local }) {
         <h2>Start a campaign</h2>
         <ol className="how">
           <li>In ChatGPT, run <b>@Banner Concept Studio</b> with your brief, pick an idea and approve it.</li>
-          <li>Unzip its download and upload all the images here (landscape, square, portrait, wide).</li>
+          <li>Upload its ZIP here as it is (or the images inside it).</li>
           <li>Add the brand kit and copy, pick placements, and download every size as one ZIP.</li>
         </ol>
         <Field label="Campaign or business name" hint="Used to name the exported files."><input id="biz" value={brief.business} onChange={set('business')} placeholder="e.g. Wallgold" /></Field>

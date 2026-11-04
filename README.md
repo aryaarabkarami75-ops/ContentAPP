@@ -6,9 +6,6 @@ Internal tool: brief → 5 AI ideas → text-free concept → edits → brand ki
 - **No API key (ChatGPT Team):** make ideas and text-free art with the *Banner Concept Studio* Custom GPT (setup in `custom-gpt/`), then in the app choose **Start from my own artwork** and upload the landscape/square/portrait/wide images. Each placement starts from the closest shape and is smart-cropped; brand kit colours, copy, exact sizes and the ZIP all work without a key.
 - **With an OpenAI API key:** the whole flow runs inside the app, including ideas, edits, font/logo detection and true per-ratio recomposition.
 
-## Browser-only build (no server)
-`node scripts/build-page.mjs out.html` builds the no-key version as one self-contained page (smart crop, colour extraction and ZIP all run in the browser). This is what's published as the team's claude.ai link; it can also be dropped on any static host.
-
 ## Run locally
 ```bash
 npm install
