@@ -247,34 +247,148 @@ def draw_cta(canvas, label, x, y, h, w, font, colors):
     font.draw(d, (x + w / 2 - font.width(label) / 2, y + h / 2), label, readable(colors.get("ctaText"), colors["accent"]), anchor="lm")
 
 
+
+# ---------------------------------------------------------------- blending (infuse copy into the art)
+def extend_art(art, W, H, box, axis):
+    """Place art in box and continue its own edge colours across the rest of the canvas,
+    with a wide feathered seam, so there is no hard panel edge or flat colour block."""
+    ax, ay, aw, ah = box
+    canvas = Image.new("RGB", (W, H))
+    if axis == "x":
+        e = max(2, round(aw * 0.06))
+        far_left = ax > 0  # art on the right: continue its left edge leftwards
+        strip = art.crop((0, 0, e, ah)) if far_left else art.crop((aw - e, 0, aw, ah))
+        fill = strip.resize((W, H), Image.BILINEAR)
+    else:
+        e = max(2, round(ah * 0.06))
+        strip = art.crop((0, ah - e, aw, ah))
+        fill = strip.resize((W, H), Image.BILINEAR)
+    fill = fill.filter(ImageFilter.GaussianBlur(max(2, min(W, H) * 0.12)))
+    # soft low-frequency light so the field isn't dead flat
+    canvas.paste(fill)
+    a = Image.new("RGB", (W, H))
+    a.paste(art, (ax, ay))
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    if axis == "x":
+        feather = aw * 0.35
+        d = (xx - ax) if far_left else (ax + aw - xx)
+    else:
+        feather = ah * 0.3
+        d = ay + ah - yy
+    m = np.clip(d / max(1, feather), 0, 1)
+    m = m * m * (3 - 2 * m)
+    mask = Image.fromarray((m * 255).astype(np.uint8), "L")
+    canvas.paste(a, (0, 0), mask)
+    return canvas
+
+
+def busy_area(img, box):
+    x, y, w, h = (max(0, round(v)) for v in box)
+    r = img.convert("L").crop((x, y, x + max(1, w), y + max(1, h))).resize((32, 32), Image.BILINEAR)
+    a = np.asarray(r, dtype=np.float32)
+    edge = np.abs(np.diff(a, axis=0)).mean() + np.abs(np.diff(a, axis=1)).mean()
+    return a.std() > 24 or edge > 9
+
+
+def reflow_layout(lay):
+    """Full-bleed layout whose copy area would cover the subject -> art panel + extended background."""
+    W, H, rtl, side = lay["W"], lay["H"], lay["rtl"], lay["side"]
+    nl = dict(lay, reflowed=True)
+    if side == "bottom" and W / H >= 1.0:
+        side = "right" if rtl else "left"
+    if side in ("left", "right"):
+        aw = round(min(W * (0.44 if W / H < 1.4 else 0.5), H * 1.25))
+        nl["art"] = (W - aw, 0, aw, H) if side == "left" else (0, 0, aw, H)
+        nl["content"] = (0, 0, W - aw, H) if side == "left" else (aw, 0, W - aw, H)
+        nl["mode"], nl["side"] = "strip", "none"
+    else:
+        ah = round(H * 0.56)
+        nl["art"], nl["content"] = (0, 0, W, ah), (0, ah, W, H - ah)
+        nl["mode"], nl["side"] = "tower", "none"
+    return nl
+
+
+def region_rgb(img, box):
+    x, y, w, h = (max(0, round(v)) for v in box)
+    r = img.convert("RGB").crop((x, y, max(x + 1, x + w), max(y + 1, y + h))).resize((24, 24), Image.BILINEAR)
+    a = np.asarray(r, dtype=np.float32).reshape(-1, 3)
+    return a.mean(0), float((a @ np.array([0.299, 0.587, 0.114])).std())
+
+
+def hexof(v):
+    return "#%02x%02x%02x" % tuple(int(max(0, min(255, round(c)))) for c in v)
+
+
+def pick_text(colors, bg_hex, busy):
+    need = 4.5 if busy < 28 else 6
+    cands = [colors.get("text"), colors.get("background"), colors.get("primary"), "#ffffff", "#141414"]
+    for cnd in cands:
+        if cnd and contrast(cnd, bg_hex) >= need:
+            return cnd, False
+    best = max(["#ffffff", "#141414"], key=lambda c: contrast(c, bg_hex))
+    return best, True
+
+
 # ---------------------------------------------------------------- banner
 def render_banner(W, H, art, logo, colors, copy, layout):
     c = dict(colors)
     if contrast(c["accent"], c["background"]) < 1.8:
         c["accent"] = c["primary"] if contrast(c.get("primary", "#000"), c["background"]) >= 1.8 else readable(None, c["background"])
-    canvas = Image.new("RGBA", (W, H), rgb(c["background"]) + (255,))
-    ax, ay, aw, ah = (round(v) for v in layout["art"])
-    if art is not None:
-        canvas.alpha_composite(art.convert("RGBA"), (ax, ay))
-    warnings = []
     mode, side, rtl = layout["mode"], layout["side"], layout["rtl"]
+    ax, ay, aw, ah = (round(v) for v in layout["art"])
+    warnings = []
+    blend = layout.get("style", "blend") == "blend"
+    if art is not None and blend and mode in ("strip", "tower"):
+        canvas = extend_art(art, W, H, (ax, ay, aw, ah), "x" if mode == "strip" else "y").convert("RGBA")
+    else:
+        canvas = Image.new("RGBA", (W, H), rgb(c["background"]) + (255,))
+        if art is not None:
+            canvas.alpha_composite(art.convert("RGBA"), (ax, ay))
     if mode == "art":
         return canvas, warnings
     bg = c["background"]
-    if mode == "full" and side in ("left", "right"):
-        g = gradient(W, H, 0 if side == "left" else W, 0, W * 0.7 if side == "left" else W * 0.3, 0, bg, 0.88, 0.0)
-        canvas.alpha_composite(g)
-    elif mode == "full":
-        canvas.alpha_composite(gradient(W, H, 0, H, 0, H * 0.4, bg, 0.92, 0.0))
-    elif mode == "strip":
-        bw = aw * 0.45
-        x0 = ax + aw if rtl else ax
-        canvas.alpha_composite(gradient(W, H, x0, 0, x0 - bw if rtl else x0 + bw, 0, bg, 1.0, 0.0))
-    elif mode == "tower":
-        canvas.alpha_composite(gradient(W, H, 0, ah, 0, ah * 0.7, bg, 1.0, 0.0))
+    if blend:
+        reg, busy = region_rgb(canvas, layout["content"])
+        bg = hexof(reg)
+        tc, need_scrim = pick_text(c, bg, busy)
+        # CTA: brand accent if it stands out on this area, else a brand colour that does, else text colour
+        for cand in (colors.get("accent"), colors.get("primary"), colors.get("background"), tc):
+            if cand and contrast(cand, bg) >= 2.2:
+                c["accent"] = cand
+                break
+        if need_scrim:
+            # a soft veil of the area's own colour pushed away from the text colour (no flat brand block)
+            shade = reg * (1.25 if lum(tc) < 0.4 else 0.45)
+            shade = hexof(np.minimum(255, shade + (40 if lum(tc) < 0.4 else 0)))
+            cx_, cy_, cw_, ch_ = layout["content"]
+            if mode == "full" and side in ("left", "right"):
+                canvas.alpha_composite(gradient(W, H, 0 if side == "left" else W, 0, W * 0.65 if side == "left" else W * 0.35, 0, shade, 0.7, 0.0))
+            elif mode == "full":
+                canvas.alpha_composite(gradient(W, H, 0, H, 0, H * 0.45, shade, 0.75, 0.0))
+            else:
+                veil = Image.new("RGBA", (W, H), rgb(shade) + (0,))
+                vm = Image.new("L", (W, H), 0)
+                ImageDraw.Draw(vm).rectangle((cx_, cy_, cx_ + cw_, cy_ + ch_), fill=150)
+                veil.putalpha(vm.filter(ImageFilter.GaussianBlur(max(4, min(W, H) * 0.25))))
+                canvas.alpha_composite(veil)
+            reg, _ = region_rgb(canvas, layout["content"])
+            bg = hexof(reg)
+            tc = max(["#ffffff", "#141414", tc], key=lambda t: contrast(t, bg)) if contrast(tc, bg) < 4.5 else tc
+    else:
+        if mode == "full" and side in ("left", "right"):
+            canvas.alpha_composite(gradient(W, H, 0 if side == "left" else W, 0, W * 0.7 if side == "left" else W * 0.3, 0, bg, 0.88, 0.0))
+        elif mode == "full":
+            canvas.alpha_composite(gradient(W, H, 0, H, 0, H * 0.4, bg, 0.92, 0.0))
+        elif mode == "strip":
+            bw = aw * 0.45
+            x0 = ax + aw if rtl else ax
+            canvas.alpha_composite(gradient(W, H, x0, 0, x0 - bw if rtl else x0 + bw, 0, bg, 1.0, 0.0))
+        elif mode == "tower":
+            canvas.alpha_composite(gradient(W, H, 0, ah, 0, ah * 0.7, bg, 1.0, 0.0))
+        tc = None
 
     d = ImageDraw.Draw(canvas)
-    tc = readable(c.get("text"), bg)
+    tc = tc or readable(c.get("text"), bg)
     headline, sub, cta = copy.get("headline", ""), copy.get("sub", ""), copy.get("cta", "")
     md = min(W, H)
     pad = max(6, round(md * 0.07))
@@ -294,8 +408,8 @@ def render_banner(W, H, art, logo, colors, copy, layout):
             dist += lw + pad
         ctaw = 0
         if cta:
-            ch = round(max(18, H * 0.46))
-            f, ctaw = cta_size(cta, ch, bw_ * 0.34)
+            ch = round(max(18, H * 0.4))
+            f, ctaw = cta_size(cta, ch, bw_ * 0.38)
             draw_cta(canvas, cta, X(bw_ - ctaw, ctaw), (H - ch) / 2, ch, ctaw, f, c)
             d = ImageDraw.Draw(canvas)
         tw = bw_ - ctaw - pad - dist
@@ -335,10 +449,11 @@ def render_banner(W, H, art, logo, colors, copy, layout):
             paste_logo(canvas, logo, bx, top, bw_, lh, align)
             top += lh + pad * 0.7
             avail -= lh + pad * 0.7
-    ch = round(min(max(md * (0.2 if mode == "strip" else 0.11), 22), avail * 0.22)) if cta else 0
+    sm = "full" if layout.get("reflowed") else mode
+    ch = round(min(max(md * (0.2 if sm == "strip" else 0.11), 22), avail * 0.22)) if cta else 0
     gap = round(max(4, avail * 0.04))
     text_h = avail - (ch + gap * 1.6 if cta else 0)
-    head_max = min(bw_ * 0.12, text_h * 0.42) if mode == "strip" else min(md * 0.15, text_h * 0.5)
+    head_max = min(bw_ * 0.12, text_h * 0.42) if sm == "strip" else min(md * 0.15, text_h * 0.5)
     head, sb = None, None
     share = 0.62 if sub else 1
     for tries in range(4):
@@ -465,15 +580,25 @@ def run(job):
                 logo_only = s.get("logoOnly") and plogo is not None
                 art_only = (not logo_only) and s.get("artOnly") and not job.get("text_on_image_only_slots")
                 lay = compute_layout(W, H, rtl, art_only, s.get("safeZone"))
+                lay["style"] = job.get("style", "blend")
                 if logo_only:
                     img = Image.new("RGBA", (W, H), rgb(pcolors["background"]) + (255,))
                     paste_logo(img, plogo, W * 0.15, H * 0.15, W * 0.7, H * 0.7, "center")
                     warns = []
                 else:
                     _, _, aw, ah = (round(v) for v in lay["art"])
-                    art = smart_crop(pick_art(arts, aw, ah), aw, ah)
+                    src = pick_art(arts, aw, ah)
+                    art = smart_crop(src, aw, ah)
                     if job.get("flip_art"):
                         art = art.transpose(Image.FLIP_LEFT_RIGHT)
+                    if lay["mode"] == "full" and not art_only and lay["style"] == "blend" and busy_area(art, lay["content"]):
+                        # the subject sits under the copy: move it aside and continue the scene's own background
+                        lay = reflow_layout(lay)
+                        lay["style"] = "blend"
+                        _, _, aw, ah = (round(v) for v in lay["art"])
+                        art = smart_crop(src, aw, ah)
+                        if job.get("flip_art"):
+                            art = art.transpose(Image.FLIP_LEFT_RIGHT)
                     img, warns = render_banner(W, H, art, plogo, pcolors, {} if art_only else copy, lay)
                     if art_only:
                         warns.append("image only: the platform shows the title/CTA")
