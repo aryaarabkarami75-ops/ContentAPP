@@ -77,7 +77,8 @@
           "maxKB": 200,
           "label": "Mobile & desktop"
         }
-      ]
+      ],
+      "name_fa": "تبلیغات بنری وب (پویا)"
     },
     {
       "id": "push",
@@ -107,7 +108,8 @@
           "artOnly": true,
           "logoOnly": true
         }
-      ]
+      ],
+      "name_fa": "پوش نوتیفیکیشن"
     },
     {
       "id": "in-app",
@@ -124,7 +126,8 @@
           "maxKB": 200,
           "label": "Banner"
         }
-      ]
+      ],
+      "name_fa": "بنر درون اپلیکیشن"
     },
     {
       "id": "sheypoor",
@@ -172,7 +175,8 @@
           "maxKB": 200,
           "label": "New desktop"
         }
-      ]
+      ],
+      "name_fa": "شیپور"
     },
     {
       "id": "badesaba",
@@ -199,7 +203,8 @@
           "maxKB": 200,
           "label": "Slot 2, end of home page"
         }
-      ]
+      ],
+      "name_fa": "بادصبا"
     },
     {
       "id": "neshan",
@@ -249,7 +254,8 @@
           "maxKB": 200,
           "label": "General banner"
         }
-      ]
+      ],
+      "name_fa": "نشان"
     },
     {
       "id": "akharin-khabar",
@@ -288,7 +294,8 @@
           "label": "News push, 2:1 (platform adds text)",
           "artOnly": true
         }
-      ]
+      ],
+      "name_fa": "آخرین خبر"
     },
     {
       "id": "vinzy",
@@ -312,7 +319,8 @@
           "maxKB": 200,
           "label": "Home page banner"
         }
-      ]
+      ],
+      "name_fa": "وینزی"
     },
     {
       "id": "bale",
@@ -342,7 +350,8 @@
           "maxKB": 200,
           "label": "Personal message"
         }
-      ]
+      ],
+      "name_fa": "پیام‌رسان بله"
     },
     {
       "id": "soroush",
@@ -372,7 +381,8 @@
           "label": "Pop-up (platform adds title/subtitle)",
           "artOnly": true
         }
-      ]
+      ],
+      "name_fa": "پیام‌رسان سروش"
     },
     {
       "id": "rubika",
@@ -410,6 +420,36 @@
           ],
           "maxKB": 200,
           "label": "Personal message"
+        }
+      ],
+      "name_fa": "پیام‌رسان روبیکا"
+    },
+    {
+      "id": "menchers",
+      "name": "Menchers (in-game)",
+      "name_fa": "منچرز (درون بازی)",
+      "group": "Games",
+      "notes": "Round logo: 512x512 transparent PNG named <brand>_logo_round.png; the logo must stay inside the 365px centre circle and not be smaller than the 243px circle. Banner size not specified in the kit (assumed 2:1).",
+      "sizes": [
+        {
+          "id": "logo-round",
+          "width": 512,
+          "height": 512,
+          "formats": [
+            "png"
+          ],
+          "label": "Round brand logo (transparent)",
+          "kind": "round-logo"
+        },
+        {
+          "id": "banner",
+          "width": 1080,
+          "height": 540,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Landscape banner (size assumed)"
         }
       ]
     }
