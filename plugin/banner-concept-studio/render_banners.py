@@ -547,11 +547,70 @@ def slug(s):
 
 
 # ---------------------------------------------------------------- main
+class JobError(Exception):
+    pass
+
+
+def validate(job, rel):
+    errs = []
+    for f in (FONT_HEAD, FONT_BODY, FONT_CTA):
+        if not os.path.exists(f):
+            errs.append(f"فونت پیدا نشد: {f}")
+    arts = job.get("art") or []
+    if not arts:
+        errs.append("هیچ تصویری در art نیست")
+    for a in arts:
+        if not os.path.exists(rel(a)):
+            errs.append(f"تصویر پیدا نشد: {a}")
+    copy = job.get("copy") or {}
+    if not (copy.get("headline") or "").strip():
+        errs.append("تیتر (copy.headline) خالی است")
+    if not (copy.get("cta") or "").strip():
+        errs.append("متن دکمه (copy.cta) خالی است")
+    lg = (job.get("brand") or {}).get("logo")
+    if lg and not os.path.exists(rel(lg)):
+        errs.append(f"لوگو پیدا نشد: {lg}")
+    if errs:
+        raise JobError(" | ".join(errs))
+
+
+FA_DIG = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def fa(n):
+    return str(n).translate(FA_DIG)
+
+
+def report_fa(results, zip_name):
+    lines = [f"✅ {fa(len(results))} فایل ساخته شد."]
+    by = {}
+    for r in results:
+        by.setdefault(r["placement"], []).append(r)
+    for pl, rs in by.items():
+        sizes = "، ".join(fa(r["size"].replace("x", "×")) for r in rs)
+        lines.append(f"• {pl}: {sizes}")
+    img_only = [r for r in results if r["text"] == "image-only"]
+    if img_only:
+        lines.append("ℹ️ فقط تصویر (طبق قوانین پلتفرم، متن را خود پلتفرم کنار تصویر نشان می‌دهد): " + "، ".join(f"{r['placement']} {fa(r['size'].replace('x', '×'))}" for r in img_only))
+    probs = [r for r in results if r["text"] == "missing"]
+    if probs:
+        lines.append("⚠️ تیتر جا نشد (تیتر کوتاه‌تر بده): " + "، ".join(fa(r["size"].replace("x", "×")) for r in probs))
+    drops = [r for r in results if any("subtext dropped" in w for w in r["warnings"])]
+    if drops:
+        lines.append("ℹ️ زیرتیتر به‌خاطر جای کم حذف شد در: " + "، ".join(fa(r["size"].replace("x", "×")) for r in drops))
+    big = [r for r in results if any("over the" in w for w in r["warnings"])]
+    if big:
+        lines.append("⚠️ بیشتر از سقف حجم: " + "، ".join(fa(r["size"].replace("x", "×")) for r in big))
+    lines.append(f"📦 فایل ZIP: {zip_name}")
+    return "\n".join(lines)
+
+
 def run(job):
     base = os.path.dirname(os.path.abspath(job.get("_path", ".")))
     rel = lambda p: p if os.path.isabs(p) else os.path.join(base, p)
     with open(os.path.join(HERE, "placements.json"), encoding="utf-8") as f:
         catalog = json.load(f)["placements"]
+    validate(job, rel)
     wanted = job.get("placements", "all")
     chosen = catalog if wanted == "all" else [p for p in catalog if p["id"] in wanted]
     missing = [] if wanted == "all" else [w for w in wanted if w not in {p["id"] for p in catalog}]
@@ -573,6 +632,7 @@ def run(job):
             W, H = s["width"], s["height"]
             fmt = (s.get("formats") or ["png"])[0]
             if s.get("kind") == "round-logo":
+                tstate = "logo"
                 img, warns = render_round_logo(logo, brand.get("logo_bg") or pcolors.get("primary") or pcolors["background"], W)
                 data, q = encode(img, "png")
                 fname = f"{p['id']}/{name}_logo_round.png"
@@ -581,6 +641,7 @@ def run(job):
                 art_only = (not logo_only) and s.get("artOnly") and not job.get("text_on_image_only_slots")
                 lay = compute_layout(W, H, rtl, art_only, s.get("safeZone"))
                 lay["style"] = job.get("style", "blend")
+                tstate = "image-only" if art_only else ("logo" if logo_only else "ok")
                 if logo_only:
                     img = Image.new("RGBA", (W, H), rgb(pcolors["background"]) + (255,))
                     paste_logo(img, plogo, W * 0.15, H * 0.15, W * 0.7, H * 0.7, "center")
@@ -613,7 +674,9 @@ def run(job):
             kb = round(len(data) / 1024)
             if s.get("maxKB") and kb > s["maxKB"]:
                 warns.append(f"{kb} KB is over the {s['maxKB']} KB limit")
-            results.append({"file": fname, "placement": p.get("name_fa") or p["name"], "slot": s.get("label_fa") or s.get("label") or s["id"], "size": f"{W}x{H}", "kb": kb, "warnings": warns})
+            if tstate == "ok" and any("headline too long" in w for w in warns):
+                tstate = "missing"
+            results.append({"text": tstate, "file": fname, "placement": p.get("name_fa") or p["name"], "slot": s.get("label_fa") or s.get("label") or s["id"], "size": f"{W}x{H}", "kb": kb, "warnings": warns})
             previews.append((fname, img))
     with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(results, fh, ensure_ascii=False, indent=2)
@@ -622,22 +685,26 @@ def run(job):
         for r in results:
             z.write(os.path.join(out, r["file"]), r["file"])
         z.write(os.path.join(out, "manifest.json"), "manifest.json")
-    # contact sheet for showing in chat
-    thumbs = []
-    for _, im in previews:
-        t = im.copy()
-        t.thumbnail((360, 260))
-        thumbs.append(t)
+    # contact sheet for showing in chat: every banner with its size caption, nothing else
     cols = 4
-    cw, rh = 380, 280
-    rows = math.ceil(len(thumbs) / cols) or 1
-    sheet = Image.new("RGB", (cols * cw, rows * rh), (236, 236, 240))
-    for i, t in enumerate(thumbs):
-        bgc = Image.new("RGBA", t.size, (200, 200, 205, 255))
+    cw, rh, cap = 380, 300, 34
+    rows = math.ceil(len(previews) / cols) or 1
+    sheet = Image.new("RGB", (cols * cw, rows * rh), (244, 244, 247))
+    capf = Text(FONT_BODY, 15)
+    dsh = ImageDraw.Draw(sheet)
+    for i, ((fname, im), r) in enumerate(zip(previews, results)):
+        t = im.copy()
+        t.thumbnail((360, rh - cap - 14))
+        bgc = Image.new("RGBA", t.size, (210, 210, 215, 255))
         bgc.alpha_composite(t.convert("RGBA"))
-        sheet.paste(bgc.convert("RGB"), ((i % cols) * cw + (cw - t.width) // 2, (i // cols) * rh + (rh - t.height) // 2))
+        x0, y0 = (i % cols) * cw, (i // cols) * rh
+        sheet.paste(bgc.convert("RGB"), (x0 + (cw - t.width) // 2, y0 + 8 + (rh - cap - 14 - t.height) // 2))
+        label = f"{r['placement']} · {fa(r['size'].replace('x', '×'))}" + (" · فقط تصویر" if r["text"] == "image-only" else "")
+        while capf.width(label) > cw - 16 and len(label) > 8:
+            label = label[:-2]
+        capf.draw(dsh, (x0 + cw / 2 - capf.width(label) / 2, y0 + rh - cap / 2 - 4), label, (60, 60, 70), anchor="lm")
     sheet.save(os.path.join(out, "preview.png"))
-    return {"zip": zpath, "preview": os.path.join(out, "preview.png"), "count": len(results), "rtl": rtl, "raqm": RAQM, "unknown_placements": missing, "files": results}
+    return {"report_fa": report_fa(results, os.path.basename(zpath)), "zip": zpath, "preview": os.path.join(out, "preview.png"), "count": len(results), "rtl": rtl, "raqm": RAQM, "unknown_placements": missing, "files": results}
 
 
 if __name__ == "__main__":
@@ -645,4 +712,9 @@ if __name__ == "__main__":
     with open(jp, encoding="utf-8") as f:
         job = json.load(f)
     job["_path"] = jp
-    print(json.dumps(run(job), ensure_ascii=False, indent=2))
+    try:
+        res = run(job)
+    except JobError as e:
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        sys.exit(2)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
