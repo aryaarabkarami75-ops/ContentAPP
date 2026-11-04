@@ -10,7 +10,7 @@ export async function encode(canvas, format, maxKB, dpi) {
     let blob = await toBlob(canvas, type);
     if ((maxKB && blob.size / 1024 > maxKB) || dpi) {
       // Browsers can't compress PNG or set its DPI; the server re-encodes it (reduced palette if needed) and stamps the DPI.
-      const res = await fetch('/api/finalize-png', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: canvas.toDataURL('image/png'), maxKB, dpi }) });
+      const res = import.meta.env.VITE_LOCAL === '1' ? { ok: false } : await fetch('/api/finalize-png', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: canvas.toDataURL('image/png'), maxKB, dpi }) });
       if (res.ok) { const { image } = await res.json(); blob = await (await fetch(image)).blob(); }
     }
     return { blob, quality: null, overLimit: maxKB ? blob.size / 1024 > maxKB : false };
@@ -29,6 +29,9 @@ export async function downloadZip(items, name) {
   items.forEach((it) => zip.file(it.filename, it.blob));
   zip.file('manifest.json', JSON.stringify(items.map(({ filename, placement, size, sizeKB, format }) => ({ filename, placement: placement.name, slot: size.label || size.id, width: size.width, height: size.height, format, sizeKB })), null, 2));
   const blob = await zip.generateAsync({ type: 'blob' });
+  // Inside a claude.ai page, downloads go through the viewer's save prompt.
+  const downloads = window.claude?.use ? await window.claude.use('downloads').catch(() => null) : null;
+  if (downloads) { await downloads.save({ filename: `${name}.zip`, data: blob }); return; }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `${name}.zip`;

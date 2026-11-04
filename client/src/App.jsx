@@ -61,7 +61,7 @@ export default function App() {
     <div className="app">
       <header>
         <div className="brand-mark">Banner Studio</div>
-        {cfg && <span className={`mode ${cfg.demo ? 'demo' : ''}`}>{cfg.demo ? 'No API key: AI steps are placeholders. Start from your own artwork' : `Connected · ${cfg.textModel} · ${cfg.imageModel}`}</span>}
+        {cfg && <span className={`mode ${cfg.demo ? 'demo' : ''}`}>{cfg.local ? 'Artwork comes from the Banner Concept Studio plugin in ChatGPT' : cfg.demo ? 'No API key: AI steps are placeholders. Start from your own artwork' : `Connected · ${cfg.textModel} · ${cfg.imageModel}`}</span>}
       </header>
       <nav className="steps">
         {STEPS.map((s, i) => (
@@ -74,7 +74,7 @@ export default function App() {
       {busy && <div className="busy"><div className="spinner" />{busy}</div>}
 
       <main className={busy ? 'dim' : ''}>
-        {step === 0 && <Brief brief={brief} setBrief={setBrief} onNext={getIdeas} demo={cfg?.demo}
+        {step === 0 && <Brief brief={brief} setBrief={setBrief} onNext={getIdeas} demo={cfg?.demo} local={cfg?.local}
           onOwnArt={async (files) => {
             const urls = await Promise.all([...files].map(fileToDataUrl));
             setHistory([urls[0]]); setVersion(0); setVariants(urls.slice(1)); setStep(2);
@@ -88,7 +88,7 @@ export default function App() {
             onRegenerate={() => makeConcept()} onAccept={() => setStep(3)} canEdit={!cfg?.demo} hasIdea={!!idea}
             variants={variants} setVariants={setVariants} />
         )}
-        {step === 3 && <Brand brand={brand} setBrand={setBrand} run={run} master={master}
+        {step === 3 && <Brand demo={cfg?.demo} brand={brand} setBrand={setBrand} run={run} master={master}
           onHarmonize={(colors) => run('Harmonising artwork with brand colours…', async () => {
             const { image } = await api('harmonize', { image: master, colors });
             const next = [...history.slice(0, version + 1), image]; setHistory(next); setVersion(next.length - 1);
@@ -173,9 +173,28 @@ function Field({ label, hint, children }) {
   return <label className="field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>;
 }
 
-function Brief({ brief, setBrief, onNext, onOwnArt, demo }) {
+function Brief({ brief, setBrief, onNext, onOwnArt, demo, local }) {
   const set = (k) => (e) => setBrief({ ...brief, [k]: e.target.value });
   const ok = brief.business && brief.promotion && brief.message;
+  const upload = (
+    <label className={`button ${local ? 'primary-solid' : demo ? 'primary-ish' : ''}`}>{local ? 'Upload the artwork' : 'Start from my own artwork'}
+      <input id="art-upload" type="file" accept="image/*" multiple hidden onChange={(e) => e.target.files?.length && onOwnArt(e.target.files)} />
+    </label>
+  );
+  if (local) {
+    return (
+      <section className="card narrow">
+        <h2>Start a campaign</h2>
+        <ol className="how">
+          <li>In ChatGPT, run <b>@Banner Concept Studio</b> with your brief, pick an idea and approve it.</li>
+          <li>Unzip its download and upload all the images here (landscape, square, portrait, wide).</li>
+          <li>Add the brand kit and copy, pick placements, and download every size as one ZIP.</li>
+        </ol>
+        <Field label="Campaign or business name" hint="Used to name the exported files."><input id="biz" value={brief.business} onChange={set('business')} placeholder="e.g. Wallgold" /></Field>
+        <div className="actions">{upload}</div>
+      </section>
+    );
+  }
   return (
     <section className="card narrow">
       <h2>Tell us about the campaign</h2>
@@ -185,9 +204,7 @@ function Brief({ brief, setBrief, onNext, onOwnArt, demo }) {
       <Field label="Audience (optional)"><input value={brief.audience} onChange={set('audience')} placeholder="e.g. students and young professionals" /></Field>
       <div className="actions">
         <button className="primary" disabled={!ok} onClick={onNext}>Suggest 5 ideas</button>
-        <label className={`button ${demo ? 'primary-ish' : ''}`}>Start from my own artwork
-          <input type="file" accept="image/*" multiple hidden onChange={(e) => e.target.files?.length && onOwnArt(e.target.files)} />
-        </label>
+        {upload}
       </div>
       <p className="muted small">Made the visuals in ChatGPT? Upload them here (landscape, square and portrait if you have them) and skip straight to brand, copy and sizes.</p>
     </section>
@@ -248,7 +265,7 @@ function Concept({ history, version, setVersion, onEdit, onRegenerate, onAccept,
   );
 }
 
-function Brand({ brand, setBrand, run, onHarmonize, onNext }) {
+function Brand({ brand, setBrand, run, onHarmonize, onNext, demo }) {
   const [source, setSource] = useState(null);
   const [notes, setNotes] = useState('');
   const [palette, setPalette] = useState([]);
@@ -282,7 +299,7 @@ function Brand({ brand, setBrand, run, onHarmonize, onNext }) {
             <label key={k}><input type="color" value={brand.colors[k]} onChange={setColor(k)} />{l}</label>
           ))}
         </div>
-        <button onClick={() => onHarmonize(Object.values(brand.colors))}>Re-tint artwork to these colours</button>
+        {!demo && <button onClick={() => onHarmonize(Object.values(brand.colors))}>Re-tint artwork to these colours</button>}
         {['headlineFont', 'bodyFont'].map((k) => (
           <div key={k}>
             <h4>{k === 'headlineFont' ? 'Headline font' : 'Body & CTA font'}</h4>
@@ -385,7 +402,7 @@ function Results({ results, brief, onRebuild, canRecompose }) {
   const items = results.map((r) => ({ ...r, filename: `${r.placement.id}/${name}_${r.placement.id}_${r.size.id === `${r.size.width}x${r.size.height}` ? '' : `${r.size.id}_`}${r.size.width}x${r.size.height}.${r.format}` }));
   return (
     <section>
-      <div className="actions top"><h2>Preview</h2><button className="primary" onClick={() => downloadZip(items, `${name}-banners`)}>Download ZIP ({items.length})</button></div>
+      <div className="actions top"><h2>Preview</h2><button className="primary" onClick={() => downloadZip(items, `${name}-banners`).catch((e) => { if (e?.code !== 'declined') console.warn(e); })}>Download ZIP ({items.length})</button></div>
       <div className="results">
         {items.map((r) => (
           <figure key={r.key}>
