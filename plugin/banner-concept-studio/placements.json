@@ -429,7 +429,7 @@
       "name": "Menchers (in-game)",
       "name_fa": "منچرز (درون بازی)",
       "group": "Games",
-      "notes": "Round logo: 512x512 transparent PNG named <brand>_logo_round.png; the logo must stay inside the 365px centre circle and not be smaller than the 243px circle. Banner size not specified in the kit (assumed 2:1).",
+      "notes": "Round logo: 512x512 transparent PNG named <brand>_logo_round.png; the logo must stay inside the 365px centre circle and not be smaller than the 243px circle. Banner 1280x720.",
       "sizes": [
         {
           "id": "logo-round",
@@ -443,13 +443,13 @@
         },
         {
           "id": "banner",
-          "width": 1080,
-          "height": 540,
+          "width": 1280,
+          "height": 720,
           "formats": [
             "jpg"
           ],
           "maxKB": 200,
-          "label": "Landscape banner (size assumed)"
+          "label": "Landscape banner"
         }
       ]
     }
