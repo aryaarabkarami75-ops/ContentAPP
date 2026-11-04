@@ -1,0 +1,417 @@
+{
+  "_note": "From 'Yektanet Ad Specifications Guide' (Sep 2026). Picking a placement exports all of its sizes. artOnly = the platform shows its own title/subtitle/CTA next to the image, so by default no copy is drawn on it. Video and interactive formats are not covered.",
+  "placements": [
+    {
+      "id": "web-dynamic",
+      "name": "Web display (dynamic)",
+      "group": "Web",
+      "notes": "Mobile & desktop sites. JPEG or GIF, max 200 KB.",
+      "sizes": [
+        {
+          "id": "300x250",
+          "width": 300,
+          "height": 250,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Mobile & desktop"
+        },
+        {
+          "id": "728x90",
+          "width": 728,
+          "height": 90,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Mobile & desktop"
+        },
+        {
+          "id": "970x250",
+          "width": 970,
+          "height": 250,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Desktop"
+        },
+        {
+          "id": "468x60",
+          "width": 468,
+          "height": 60,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Mobile & desktop"
+        },
+        {
+          "id": "300x100",
+          "width": 300,
+          "height": 100,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Mobile"
+        },
+        {
+          "id": "120x600",
+          "width": 120,
+          "height": 600,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Desktop, vertical"
+        },
+        {
+          "id": "600x400",
+          "width": 600,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Mobile & desktop"
+        }
+      ]
+    },
+    {
+      "id": "push",
+      "name": "Push notification",
+      "group": "Web",
+      "notes": "Desktop & mobile. Title (35) and subtitle (150) are entered on the platform.",
+      "sizes": [
+        {
+          "id": "banner",
+          "width": 600,
+          "height": 300,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Push banner"
+        },
+        {
+          "id": "icon",
+          "width": 192,
+          "height": 192,
+          "formats": [
+            "png",
+            "jpg"
+          ],
+          "label": "Push icon",
+          "artOnly": true,
+          "logoOnly": true
+        }
+      ]
+    },
+    {
+      "id": "in-app",
+      "name": "In-app banner (domestic & foreign apps)",
+      "group": "Apps",
+      "sizes": [
+        {
+          "id": "banner",
+          "width": 640,
+          "height": 360,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Banner"
+        }
+      ]
+    },
+    {
+      "id": "sheypoor",
+      "name": "Sheypoor",
+      "group": "Apps",
+      "sizes": [
+        {
+          "id": "native",
+          "width": 225,
+          "height": 225,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Native (platform adds title/subtitle)",
+          "artOnly": true
+        },
+        {
+          "id": "mobile-old",
+          "width": 453,
+          "height": 80,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Old mobile"
+        },
+        {
+          "id": "mobile-new",
+          "width": 984,
+          "height": 552,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "New mobile"
+        },
+        {
+          "id": "desktop-new",
+          "width": 3408,
+          "height": 504,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "New desktop"
+        }
+      ]
+    },
+    {
+      "id": "badesaba",
+      "name": "Badesaba",
+      "group": "Apps",
+      "sizes": [
+        {
+          "id": "calendar-end",
+          "width": 1029,
+          "height": 152,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Slot 1, end of calendar (home)"
+        },
+        {
+          "id": "home-end",
+          "width": 1029,
+          "height": 530,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Slot 2, end of home page"
+        }
+      ]
+    },
+    {
+      "id": "neshan",
+      "name": "Neshan",
+      "group": "Apps",
+      "notes": "Banner slots are shown full-screen with nothing added. Header/General show platform title (30) and subtitle (50).",
+      "sizes": [
+        {
+          "id": "header",
+          "width": 400,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Header (platform adds text)",
+          "artOnly": true
+        },
+        {
+          "id": "general",
+          "width": 400,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "General (platform adds text)",
+          "artOnly": true
+        },
+        {
+          "id": "header-banner",
+          "width": 688,
+          "height": 166,
+          "formats": [
+            "png"
+          ],
+          "maxKB": 200,
+          "label": "Header banner"
+        },
+        {
+          "id": "general-banner",
+          "width": 1081,
+          "height": 144,
+          "formats": [
+            "png"
+          ],
+          "maxKB": 200,
+          "label": "General banner"
+        }
+      ]
+    },
+    {
+      "id": "akharin-khabar",
+      "name": "Akharin Khabar",
+      "group": "Apps",
+      "sizes": [
+        {
+          "id": "native",
+          "width": 640,
+          "height": 360,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Native slot"
+        },
+        {
+          "id": "pin",
+          "width": 800,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Featured-news pin, 2:1 (platform adds text)",
+          "artOnly": true
+        },
+        {
+          "id": "push",
+          "width": 800,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "News push, 2:1 (platform adds text)",
+          "artOnly": true
+        }
+      ]
+    },
+    {
+      "id": "vinzy",
+      "name": "Vinzy",
+      "group": "Apps",
+      "notes": "Colour theme must match Vinzy's background #141032 with light text.",
+      "brand": {
+        "colors": {
+          "background": "#141032",
+          "text": "#ffffff"
+        }
+      },
+      "sizes": [
+        {
+          "id": "home",
+          "width": 640,
+          "height": 360,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Home page banner"
+        }
+      ]
+    },
+    {
+      "id": "bale",
+      "name": "Bale messenger",
+      "group": "Messengers",
+      "notes": "Pin: 600×400 image, only the centre 400×400 circle is shown. Title (25), subtitle (35), CTA (10) are entered on the platform.",
+      "sizes": [
+        {
+          "id": "pin",
+          "width": 600,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Pin (centre circle)",
+          "artOnly": true,
+          "circle": true
+        },
+        {
+          "id": "dm",
+          "width": 400,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Personal message"
+        }
+      ]
+    },
+    {
+      "id": "soroush",
+      "name": "Soroush messenger",
+      "group": "Messengers",
+      "sizes": [
+        {
+          "id": "pin",
+          "width": 600,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Pin (centre circle)",
+          "artOnly": true,
+          "circle": true
+        },
+        {
+          "id": "popup",
+          "width": 350,
+          "height": 200,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Pop-up (platform adds title/subtitle)",
+          "artOnly": true
+        }
+      ]
+    },
+    {
+      "id": "rubika",
+      "name": "Rubika messenger",
+      "group": "Messengers",
+      "sizes": [
+        {
+          "id": "pin",
+          "width": 600,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Pin (centre circle)",
+          "artOnly": true,
+          "circle": true
+        },
+        {
+          "id": "home",
+          "width": 1000,
+          "height": 300,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Home page banner"
+        },
+        {
+          "id": "dm",
+          "width": 400,
+          "height": 400,
+          "formats": [
+            "jpg"
+          ],
+          "maxKB": 200,
+          "label": "Personal message"
+        }
+      ]
+    }
+  ]
+}
