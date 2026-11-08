@@ -99,6 +99,24 @@ def wrap(text, font, max_w):
     return lines
 
 
+
+def down(img, size, box=None):
+    """High-quality resize: LANCZOS, plus a light unsharp mask when shrinking a lot (keeps detail crisp)."""
+    W, H = size
+    bw = (box[2] - box[0]) if box else img.width
+    bh = (box[3] - box[1]) if box else img.height
+    out = img.resize((W, H), Image.LANCZOS, box=box)
+    k = min(W / max(1, bw), H / max(1, bh))
+    if k < 0.75:
+        amt = int(min(90, 40 + (0.75 - k) * 80))
+        if out.mode == "RGBA":
+            a = out.getchannel("A")
+            out = out.convert("RGB").filter(ImageFilter.UnsharpMask(0.8, amt, 2)).convert("RGBA")
+            out.putalpha(a)
+        else:
+            out = out.filter(ImageFilter.UnsharpMask(0.8, amt, 2))
+    return out
+
 def fit(text, path, max_w, max_h, max_size, min_size, max_lines, lh=1.3):
     if not text:
         return None
@@ -223,7 +241,7 @@ def smart_crop(img, W, H):
     cw, ch = min(cw, iw), min(ch, ih)
     sx = max(0.0, min(iw - cw, bx / gs))
     sy = max(0.0, min(ih - ch, by / gs))
-    return img.resize((W, H), Image.LANCZOS, box=(sx, sy, sx + cw, sy + ch))
+    return down(img, (W, H), box=(sx, sy, sx + cw, sy + ch))
 
 
 _SAL = {}
@@ -241,7 +259,7 @@ def anchor_crop(img, W, H, text_side):
         sx, sy = iw - cw, (ih - ch) / 2
     else:  # copy at the bottom: keep the top
         sx, sy = (iw - cw) / 2, 0.0
-    return img.resize((W, H), Image.LANCZOS, box=(sx, sy, sx + cw, sy + ch))
+    return down(img, (W, H), box=(sx, sy, sx + cw, sy + ch))
 
 
 def plain_border(img, text_side):
@@ -580,7 +598,7 @@ def card_canvas(src, W, H, box):
     sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ImageDraw.Draw(sh).rounded_rectangle((cx, cy + m * 0.25, cx + cw, cy + ch + m * 0.25), radius=r, fill=(0, 0, 0, 110))
     canvas.alpha_composite(sh.filter(ImageFilter.GaussianBlur(max(2, m * 0.5))))
-    card = src.convert("RGB").resize((cw, ch), Image.LANCZOS).convert("RGBA")
+    card = down(src.convert("RGB"), (cw, ch)).convert("RGBA")
     mk = Image.new("L", (cw * 4, ch * 4), 0)
     ImageDraw.Draw(mk).rounded_rectangle((0, 0, cw * 4 - 1, ch * 4 - 1), radius=r * 4, fill=255)
     card.putalpha(mk.resize((cw, ch), Image.LANCZOS))
@@ -841,7 +859,7 @@ def element_layout(W, H, rtl, el, field, text_w=None):
         ex, ey = (W - w) / 2, y0
         lay = dict(mode="tower", side="none", art=(ex, ey, w, h), content=(0, ey + h + gap - m * 0.5, W, th + m), W=W, H=H, rtl=rtl, reflowed=True)
     lay["_small"] = r < 1.0 and h < H * 0.25
-    elr = el.resize((max(1, round(w)), max(1, round(h))), Image.LANCZOS)
+    elr = down(el, (max(1, round(w)), max(1, round(h))))
     canvas.alpha_composite(elr, (round(ex), round(ey)))
     lay["pre_bg"] = canvas
     lay["style"] = "blend"
@@ -1238,7 +1256,7 @@ def menchers_element_file2(element, text, bg_hex, colors, size=512, layout="stac
 
     def put(img, s_, yc):
         w_, h_ = max(1, round(img.width * s_)), max(1, round(img.height * s_))
-        im = img.resize((w_, h_), Image.LANCZOS)
+        im = down(img, (w_, h_))
         x_, y_ = round(cx - w_ / 2), round(yc - h_ / 2)
         return im, x_, y_
 
@@ -1333,13 +1351,13 @@ def encode(img, fmt, max_kb=None):
             img.quantize(colors=colors, method=Image.Quantize.FASTOCTREE).save(buf, "PNG", optimize=True)
         return buf.getvalue(), None
     rgbimg = img.convert("RGB")
-    q = 92
-    while True:
+    # full-resolution colour (4:4:4) keeps coloured text and edges sharp; only step down if over the limit
+    for q, sub in ((95, 0), (92, 0), (88, 0), (85, 2), (78, 2), (70, 2), (60, 2), (50, 2), (40, 2)):
         buf = io.BytesIO()
-        rgbimg.save(buf, "JPEG", quality=q, optimize=True, progressive=True)
-        if not max_kb or buf.tell() / 1024 <= max_kb or q <= 40:
-            return buf.getvalue(), q
-        q -= 7
+        rgbimg.save(buf, "JPEG", quality=q, optimize=True, progressive=True, subsampling=sub)
+        if not max_kb or buf.tell() / 1024 <= max_kb:
+            break
+    return buf.getvalue(), q
 
 
 def slug(s):
