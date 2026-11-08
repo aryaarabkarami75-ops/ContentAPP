@@ -877,9 +877,7 @@ def run(job):
                     art = smart_crop(src, aw, ah)
                     if job.get("flip_art"):
                         art = art.transpose(Image.FLIP_LEFT_RIGHT)
-                    if lay["mode"] == "full" and not art_only and saliency(art).mean() > 0.3:
-                        lay["scrim"] = True  # busy, full-frame scene: keep it whole, darken the copy side in its own tone
-                    elif lay["mode"] == "full" and not art_only:
+                    if lay["mode"] == "full" and not art_only:
                         fl = fit_free(lay, art)
                         if fl is None:
                             # the subject fills the copy side: move it aside and continue the scene's own background

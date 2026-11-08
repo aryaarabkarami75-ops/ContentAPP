@@ -73,6 +73,8 @@ print(SKILL)
 - One strong main subject placed in the LEFT half; the RIGHT ~45% is calm, empty background that continues the same scene (same colour and texture), for Persian text.
 - اگر رنگ‌های برند را داری: Use the brand colours [HEX ها] inside the scene itself: background, surfaces, lighting and props.
 
+**بررسی قبل از نشان دادن:** به تصویر نگاه کن. اگر سوژه یا اشیا وارد ۴۵٪ سمت راست شده‌اند (مثلاً صحنه شلوغ از لبه تا لبه)، همان تصویر را یک بار دیگر با تاکید بیشتر بر خالی بودن سمت راست بساز. متن هرگز روی اشیای تصویر نمی‌نشیند؛ اگر جای خالی نباشد، ابزار مجبور می‌شود تصویر را کوچک کند.
+
 بعد فقط بنویس: «تغییری می‌خواهی؟ بگو چه چیزی عوض شود، یا بنویس «تایید».»
 
 ## مرحله ۴: ویرایش
