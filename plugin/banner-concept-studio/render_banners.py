@@ -490,6 +490,35 @@ def fit_free(lay, img):
     return nl
 
 
+def card_canvas(src, W, H, box):
+    """Clean fallback when the picture has no empty space: the whole picture, uncut, in a rounded
+    card on one side, on a smooth deep gradient taken from the picture's own colours. No fading."""
+    v = np.asarray(src.convert("RGB").resize((1, 1), Image.BOX), dtype=np.float32)[0, 0]
+    mx = max(1.0, float(v.max()))
+    c1 = v / mx * 62
+    c2 = v / mx * 105
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    t = np.clip((xx / max(1, W) * 0.6 + yy / max(1, H) * 0.4), 0, 1)[..., None]
+    bg = c2 * (1 - t) + c1 * t
+    canvas = Image.fromarray(bg.clip(0, 255).astype(np.uint8), "RGB").convert("RGBA")
+    ax, ay, aw, ah = box
+    m = max(3, round(min(W, H) * 0.06))
+    bw, bh = max(4, aw - 2 * m), max(4, ah - 2 * m)
+    s = min(bw / src.width, bh / src.height)
+    cw, ch = max(2, round(src.width * s)), max(2, round(src.height * s))
+    cx, cy = round(ax + (aw - cw) / 2), round(ay + (ah - ch) / 2)
+    r = max(2, round(min(cw, ch) * 0.07))
+    sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(sh).rounded_rectangle((cx, cy + m * 0.25, cx + cw, cy + ch + m * 0.25), radius=r, fill=(0, 0, 0, 110))
+    canvas.alpha_composite(sh.filter(ImageFilter.GaussianBlur(max(2, m * 0.5))))
+    card = src.convert("RGB").resize((cw, ch), Image.LANCZOS).convert("RGBA")
+    mk = Image.new("L", (cw * 4, ch * 4), 0)
+    ImageDraw.Draw(mk).rounded_rectangle((0, 0, cw * 4 - 1, ch * 4 - 1), radius=r * 4, fill=255)
+    card.putalpha(mk.resize((cw, ch), Image.LANCZOS))
+    canvas.alpha_composite(card, (cx, cy))
+    return canvas
+
+
 def reflow_layout(lay):
     """Full-bleed layout whose copy area would cover the subject -> art panel + extended background."""
     W, H, rtl, side = lay["W"], lay["H"], lay["rtl"], lay["side"]
@@ -538,7 +567,9 @@ def render_banner(W, H, art, logo, colors, copy, layout):
     ax, ay, aw, ah = (round(v) for v in layout["art"])
     warnings = []
     blend = layout.get("style", "blend") == "blend"
-    if art is not None and blend and mode in ("strip", "tower"):
+    if art is not None and layout.get("card"):
+        canvas = art.convert("RGBA")
+    elif art is not None and blend and mode in ("strip", "tower"):
         canvas = extend_art(art, W, H, (ax, ay, aw, ah), "x" if mode == "strip" else "y").convert("RGBA")
     else:
         canvas = Image.new("RGBA", (W, H), rgb(c["background"]) + (255,))
@@ -877,15 +908,26 @@ def run(job):
                     art = smart_crop(src, aw, ah)
                     if job.get("flip_art"):
                         art = art.transpose(Image.FLIP_LEFT_RIGHT)
+                    if lay["mode"] in ("strip", "tower") and not art_only and lay["style"] == "blend":
+                        # seam side of the picture is busy -> fading it out would smear objects: use the clean card
+                        m_ = saliency(art)
+                        gh_, gw_ = m_.shape
+                        if lay["mode"] == "strip":
+                            seam = m_[:, : max(1, gw_ // 4)] if lay["art"][0] > 0 else m_[:, -max(1, gw_ // 4):]
+                        else:
+                            seam = m_[-max(1, gh_ // 4):, :]
+                        if seam.mean() > 0.12:
+                            lay["card"] = True
+                            s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
+                            art = card_canvas(s_, W, H, lay["art"])
                     if lay["mode"] == "full" and not art_only:
                         fl = fit_free(lay, art)
                         if fl is None:
                             # the subject fills the copy side: move it aside and continue the scene's own background
                             lay = reflow_layout(lay)
-                            _, _, aw, ah = (round(v) for v in lay["art"])
-                            art = smart_crop(src, aw, ah)
-                            if job.get("flip_art"):
-                                art = art.transpose(Image.FLIP_LEFT_RIGHT)
+                            lay["card"] = True
+                            s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
+                            art = card_canvas(s_, W, H, lay["art"])
                         else:
                             lay = fl
                     img, warns = render_banner(W, H, art, plogo, pcolors, {} if art_only else copy, lay)
