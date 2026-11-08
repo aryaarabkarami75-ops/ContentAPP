@@ -9,7 +9,7 @@ job.json:
 {
   "name": "wallgold",                          # used for file names
   "art": ["landscape.png", "square.png", "portrait.png", "wide.png"],
-  "copy": {"headline": "...", "sub": "...", "cta": "..."},
+  "copy": {"headline": "...", "sub": "...", "cta": "...", "highlight": "part of headline (optional)"},
   "brand": {
     "colors": {"background": "#5a0f1e", "primary": "#8a1c2c", "accent": "#e8b23a", "text": "#ffffff", "ctaText": "#1a1a1a"},
     "logo": "logo.png",                        # optional
@@ -107,11 +107,23 @@ def fit(text, path, max_w, max_h, max_size, min_size, max_lines, lh=1.3):
     return None
 
 
-def draw_block(draw, block, x, y, align, color):
+def draw_block(draw, block, x, y, align, color, hi=None, hi_rects=None):
+    """hi: phrase to emphasise; its on-screen spans are appended to hi_rects."""
+    f = block["font"]
     for i, line in enumerate(block["lines"]):
-        w = block["font"].width(line)
+        w = f.width(line)
         lx = x if align == "left" else x - w if align == "right" else x - w / 2
-        block["font"].draw(draw, (lx, y + i * block["size"] * block["lh"]), line, color)
+        ly = y + i * block["size"] * block["lh"]
+        f.draw(draw, (lx, ly), line, color)
+        if hi and hi_rects is not None and hi in line:
+            k = line.index(hi)
+            pre, ww = f.width(line[:k]), f.width(hi)
+            rtl = bool(RTL_RE.search(line))
+            x1 = lx + w - pre if rtl else lx + pre + ww
+            t, kw = f.prep(line)
+            _, by0, _, by1 = f.font.getbbox(t, **kw)
+            pad_ = block["size"] * 0.08
+            hi_rects.append((x1 - ww - 1, ly + by0 - pad_, x1 + 1, ly + by1 + pad_))
 
 
 # ---------------------------------------------------------------- colour
@@ -235,16 +247,129 @@ def cta_size(label, h, max_w):
         if tw + size * 1.6 <= max_w or size <= 8:
             break
         size -= 1
-    return f, math.ceil(min(max_w, tw + max(h * 1.1, size * 1.6)))
+    extra = h * 0.38 if h >= 26 else 0
+    return f, math.ceil(min(max_w, tw + extra + max(h * 1.2, size * 1.8)))
 
 
-def draw_cta(canvas, label, x, y, h, w, font, colors):
-    sh = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ImageDraw.Draw(sh).rounded_rectangle((x, y + h * 0.06, x + w, y + h + h * 0.06), radius=h * 0.28, fill=(0, 0, 0, 70))
-    canvas.alpha_composite(sh.filter(ImageFilter.GaussianBlur(max(1, h * 0.12))))
+def _lighten(hexc, k):
+    r_ = np.array(rgb(hexc), dtype=np.float32)
+    return tuple(int(v) for v in np.clip(r_ + (255 - r_) * k, 0, 255)) if k >= 0 else tuple(int(v) for v in np.clip(r_ * (1 + k), 0, 255))
+
+
+def split_highlight(canvas, layer, tc, bg_hex, boxes, hi_rects, colors):
+    if hi_rects:
+        cands = [colors.get("accent"), colors.get("primary"), colors.get("background")]
+        hc = next((c for c in cands if c and c.lower() != tc.lower() and contrast(c, bg_hex) >= 3), None)
+        if hc:
+            m = Image.new("L", layer.size, 0)
+            dm = ImageDraw.Draw(m)
+            for r in hi_rects:
+                dm.rectangle(r, fill=255)
+            a = layer.getchannel("A")
+            hi_layer = layer.copy()
+            hi_layer.putalpha(Image.fromarray((np.asarray(a, dtype=np.uint16) * np.asarray(m) // 255).astype(np.uint8)))
+            layer.putalpha(Image.fromarray((np.asarray(a, dtype=np.uint16) * (255 - np.asarray(m)) // 255).astype(np.uint8)))
+            compose_text(canvas, layer, tc, bg_hex, boxes)
+            compose_text(canvas, hi_layer, hc, bg_hex, boxes)
+            return
+    compose_text(canvas, layer, tc, bg_hex, boxes)
+
+
+def compose_text(canvas, layer, tc, bg_hex, boxes):
+    """Make typed text look designed: tonal gradient fill, soft shadow in the scene's own hue,
+    and a light print-blend so the scene texture shows through slightly."""
+    W, H = canvas.size
+    alpha = layer.getchannel("A")
+    dark_text = lum(tc) < 0.35
+    # 1. shadow / glow tinted from the background, not black
+    bgv = np.array(rgb(bg_hex), dtype=np.float32)
+    sh_col = tuple(int(v) for v in (bgv * 0.35)) if not dark_text else tuple(int(v) for v in (bgv * 0.7))
+    for (x, y, w, h, size) in boxes:
+        pass
+    sz = max((b[4] for b in boxes), default=20)
+    sh = Image.new("RGBA", (W, H), sh_col + (0,))
+    off = max(1, round(sz * 0.05))
+    a2 = Image.new("L", (W, H), 0)
+    a2.paste(alpha, (0, off))
+    a2 = a2.filter(ImageFilter.GaussianBlur(max(1, sz * (0.10 if dark_text else 0.14))))
+    a2 = a2.point(lambda v: int(v * (0.35 if dark_text else 0.6)))
+    sh.putalpha(a2)
+    canvas.alpha_composite(sh)
+    # 2. vertical tonal gradient per text block (lighter top -> base colour bottom)
+    fill = Image.new("RGB", (W, H), rgb(tc))
+    fa = np.asarray(fill, dtype=np.float32).copy()
+    top_col = np.array(_lighten(tc, 0.22) if dark_text else _lighten(tc, -0.0), dtype=np.float32)
+    base = np.array(rgb(tc), dtype=np.float32)
+    bot_col = base if dark_text else np.array(_lighten(tc, -0.10), dtype=np.float32)
+    for (x, y, w, h, size) in boxes:
+        y0, y1 = max(0, int(y)), min(H, int(y + h) + 1)
+        if y1 <= y0:
+            continue
+        t = np.linspace(0, 1, y1 - y0, dtype=np.float32)[:, None, None]
+        fa[y0:y1, :, :] = top_col * (1 - t) + bot_col * t
+    styled = Image.fromarray(fa.clip(0, 255).astype(np.uint8), "RGB").convert("RGBA")
+    styled.putalpha(alpha)
+    # 3. print-blend: a touch of multiply (dark text) / screen (light text) with the scene
+    under = np.asarray(canvas.convert("RGB"), dtype=np.float32)
+    sv = np.asarray(styled.convert("RGB"), dtype=np.float32)
+    blended = under * sv / 255 if dark_text else 255 - (255 - under) * (255 - sv) / 255
+    mix = sv * 0.8 + blended * 0.2
+    out = Image.fromarray(mix.clip(0, 255).astype(np.uint8), "RGB").convert("RGBA")
+    out.putalpha(alpha)
+    canvas.alpha_composite(out)
+
+
+def draw_cta(canvas, label, x, y, h, w, font, colors, rtl=True):
+    acc = colors["accent"]
+    r = h / 2
+    W, H = canvas.size
+    shc = tuple(int(v * 0.45) for v in rgb(acc))
+    sh = Image.new("RGBA", canvas.size, shc + (0,))
+    m = Image.new("L", canvas.size, 0)
+    ImageDraw.Draw(m).rounded_rectangle((x, y + h * 0.14, x + w, y + h + h * 0.14), radius=r, fill=110)
+    sh.putalpha(m.filter(ImageFilter.GaussianBlur(max(1, h * 0.22))))
+    canvas.alpha_composite(sh)
+    # gradient body
+    x0, y0, x1, y1 = int(x), int(y), int(math.ceil(x + w)), int(math.ceil(y + h))
+    bw, bh = max(1, x1 - x0), max(1, y1 - y0)
+    top, bot = np.array(_lighten(acc, 0.18), dtype=np.float32), np.array(_lighten(acc, -0.12), dtype=np.float32)
+    t = np.linspace(0, 1, bh, dtype=np.float32)[:, None, None]
+    body = np.broadcast_to(top * (1 - t) + bot * t, (bh, bw, 3)).astype(np.uint8)
+    pill = Image.fromarray(np.ascontiguousarray(body), "RGB").convert("RGBA")
+    pm = Image.new("L", (bw * 4, bh * 4), 0)
+    ImageDraw.Draw(pm).rounded_rectangle((0, 0, bw * 4 - 1, bh * 4 - 1), radius=r * 4, fill=255)
+    pm = pm.resize((bw, bh), Image.LANCZOS)
+    pill.putalpha(pm)
+    # inner top highlight
+    hl = Image.new("RGBA", (bw, bh), (255, 255, 255, 0))
+    hm = Image.new("L", (bw * 4, bh * 4), 0)
+    ImageDraw.Draw(hm).rounded_rectangle((bw * 0.3, bh * 0.25, bw * 3.7, bh * 1.9), radius=r * 2, fill=255)
+    hm = hm.resize((bw, bh), Image.LANCZOS).filter(ImageFilter.GaussianBlur(max(1, bh * 0.08)))
+    hl.putalpha(hm.point(lambda v: int(v * 0.16)))
+    pill.alpha_composite(hl)
+    canvas.alpha_composite(pill, (x0, y0))
     d = ImageDraw.Draw(canvas)
-    d.rounded_rectangle((x, y, x + w, y + h), radius=h * 0.28, fill=rgb(colors["accent"]))
-    font.draw(d, (x + w / 2 - font.width(label) / 2, y + h / 2), label, readable(colors.get("ctaText"), colors["accent"]), anchor="lm")
+    col = readable(colors.get("ctaText"), acc)
+    arrow = h >= 26
+    aw_ = h * 0.22 if arrow else 0
+    gap = h * 0.16 if arrow else 0
+    tw = font.width(label)
+    total = tw + (aw_ + gap if arrow else 0)
+    sx = x + w / 2 - total / 2
+    if arrow:
+        # chevron points in reading direction (left for Persian)
+        cy_ = y + h / 2
+        ax0 = sx if rtl else sx + tw + gap
+        tx = sx + aw_ + gap if rtl else sx
+        lw = max(1, round(h * 0.07))
+        if rtl:
+            pts = [(ax0 + aw_ * 0.75, cy_ - aw_ * 0.6), (ax0 + aw_ * 0.15, cy_), (ax0 + aw_ * 0.75, cy_ + aw_ * 0.6)]
+        else:
+            pts = [(ax0 + aw_ * 0.25, cy_ - aw_ * 0.6), (ax0 + aw_ * 0.85, cy_), (ax0 + aw_ * 0.25, cy_ + aw_ * 0.6)]
+        d.line(pts, fill=col, width=lw, joint="curve")
+    else:
+        tx = sx
+    font.draw(d, (tx, y + h / 2), label, col, anchor="lm")
 
 
 
@@ -288,6 +413,74 @@ def busy_area(img, box):
     a = np.asarray(r, dtype=np.float32)
     edge = np.abs(np.diff(a, axis=0)).mean() + np.abs(np.diff(a, axis=1)).mean()
     return a.std() > 24 or edge > 9
+
+
+def saliency(img, gw=120):
+    """0..1 map of 'things' in the picture (subject, props), ignoring smooth backdrop and soft light."""
+    iw, ih = img.size
+    gh = max(8, round(ih * gw / iw))
+    a = np.asarray(img.convert("RGB").resize((gw, gh), Image.BILINEAR), dtype=np.float32)
+    b = np.asarray(img.convert("RGB").resize((gw, gh), Image.BILINEAR).filter(ImageFilter.GaussianBlur(gw * 0.12)), dtype=np.float32)
+    l = a @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    ed = np.zeros_like(l)
+    ed[:, 1:] += np.abs(np.diff(l, axis=1))
+    ed[1:, :] += np.abs(np.diff(l, axis=0))
+    local = np.sqrt(((a - b) ** 2).sum(2))          # differs from its smooth surroundings
+    mx, mn = a.max(2), a.min(2)
+    sat = (mx - mn) / np.maximum(mx, 1)
+    border = np.concatenate([sat[0], sat[-1], sat[:, 0], sat[:, -1]])
+    s = local / 40 + ed / 25 + np.maximum(0, sat - np.median(border) - 0.12) * 2.5
+    s = np.asarray(Image.fromarray(np.clip(s * 120, 0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(1.5)), dtype=np.float32) / 255
+    return s > 0.33
+
+
+def fit_free(lay, img):
+    """Shrink the copy area so it never covers the subject; if too little room is left, reflow."""
+    if lay["mode"] != "full" or lay["side"] == "none":
+        return lay
+    W, H = lay["W"], lay["H"]
+    m = saliency(img)
+    gh, gw = m.shape
+    side = lay["side"]
+    nl = dict(lay)
+    cx, cy, cw, ch = lay["content"]
+    if side in ("left", "right"):
+        col = m.mean(0)
+        hot = col > 0.06
+        rng = range(gw - 1, -1, -1) if side == "right" else range(gw)
+        edge = None
+        for i in rng:
+            if hot[i]:
+                edge = i
+                break
+        if edge is None:
+            return nl
+        margin = W * 0.04
+        if side == "right":
+            x0 = max(cx, (edge + 1) / gw * W + margin)
+            nl["content"] = (x0, cy, W - x0, ch)
+            free = W - x0
+        else:
+            x1 = min(cx + cw, edge / gw * W - margin)
+            nl["content"] = (0, cy, x1, ch)
+            free = x1
+        if free < W * 0.34:
+            return None
+    else:
+        row = m.mean(1)
+        hot = row > 0.06
+        edge = None
+        for j in range(gh - 1, -1, -1):
+            if hot[j]:
+                edge = j
+                break
+        if edge is None:
+            return nl
+        y0 = max(cy, (edge + 1) / gh * H + H * 0.03)
+        nl["content"] = (cx, y0, cw, H - y0)
+        if H - y0 < H * 0.3:
+            return None
+    return nl
 
 
 def reflow_layout(lay):
@@ -387,8 +580,12 @@ def render_banner(W, H, art, logo, colors, copy, layout):
             canvas.alpha_composite(gradient(W, H, 0, ah, 0, ah * 0.7, bg, 1.0, 0.0))
         tc = None
 
-    d = ImageDraw.Draw(canvas)
     tc = tc or readable(c.get("text"), bg)
+    tl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tl)
+    tl_boxes = []
+    hi = (copy.get("highlight") or "").strip() or None
+    hi_rects = []
     headline, sub, cta = copy.get("headline", ""), copy.get("sub", ""), copy.get("cta", "")
     md = min(W, H)
     pad = max(6, round(md * 0.07))
@@ -410,8 +607,7 @@ def render_banner(W, H, art, logo, colors, copy, layout):
         if cta:
             ch = round(max(18, H * 0.4))
             f, ctaw = cta_size(cta, ch, bw_ * 0.38)
-            draw_cta(canvas, cta, X(bw_ - ctaw, ctaw), (H - ch) / 2, ch, ctaw, f, c)
-            d = ImageDraw.Draw(canvas)
+            draw_cta(canvas, cta, X(bw_ - ctaw, ctaw), (H - ch) / 2, ch, ctaw, f, c, rtl)
         tw = bw_ - ctaw - pad - dist
         two = H >= 70 and sub
         head = fit(headline, FONT_HEAD, tw, (0.6 if two else 1) * bh, bh * (0.5 if two else 0.62), 9, 2, 1.25)
@@ -422,11 +618,14 @@ def render_banner(W, H, art, logo, colors, copy, layout):
             total = head["height"] + (sb["height"] + 2 if sb else 0)
             y = (H - total) / 2
             tx = bx + bw_ - dist if rtl else bx + dist
-            draw_block(d, head, tx, y, start, tc)
+            draw_block(d, head, tx, y, start, tc, hi, hi_rects)
+            tl_boxes.append((0, y, W, head["height"], head["size"]))
             if sb:
                 draw_block(d, sb, tx, y + head["height"] + 2, start, tc)
+                tl_boxes.append((0, y + head["height"] + 2, W, sb["height"], sb["size"]))
             elif sub:
                 warnings.append("subtext dropped (no room)")
+            split_highlight(canvas, tl, tc, bg, tl_boxes, hi_rects, colors)
         return canvas, warnings
 
     align = start if (mode == "strip" or side in ("left", "right")) else "center"
@@ -457,10 +656,10 @@ def render_banner(W, H, art, logo, colors, copy, layout):
     head, sb = None, None
     share = 0.62 if sub else 1
     for tries in range(4):
-        head = fit(headline, FONT_HEAD, bw_, text_h * share, head_max * (1 - tries * 0.12), 10, 3, 1.3)
+        head = fit(headline, FONT_HEAD, bw_, text_h * share, head_max * (1 - tries * 0.12), 10, 3, 1.18)
         if not head or not sub:
             break
-        sb = fit(sub, FONT_BODY, bw_, text_h - head["height"] - gap, max(10, head["size"] * 0.46), max(9, round(md * 0.03)), 3, 1.45)
+        sb = fit(sub, FONT_BODY, bw_, text_h - head["height"] - gap, max(10, head["size"] * 0.4), max(9, round(md * 0.03)), 3, 1.5)
         if sb:
             break
         share -= 0.08
@@ -471,17 +670,21 @@ def render_banner(W, H, art, logo, colors, copy, layout):
     block_h = (head["height"] if head else 0) + (gap + sb["height"] if sb else 0) + (gap * 1.6 + ch if cta else 0)
     y = top + avail - block_h if (mode == "full" and side == "bottom") else top + (avail - block_h) / 2
     if head:
-        draw_block(d, head, axx, y, align, tc)
+        draw_block(d, head, axx, y, align, tc, hi, hi_rects)
+        tl_boxes.append((0, y, W, head["height"], head["size"]))
         y += head["height"]
     if sb:
         y += gap
         draw_block(d, sb, axx, y, align, tc)
+        tl_boxes.append((0, y, W, sb["height"], sb["size"]))
         y += sb["height"]
     if cta:
         y += gap * 1.6
         f, w = cta_size(cta, ch, bw_)
         x = bx if align == "left" else bx + bw_ - w if align == "right" else bx + (bw_ - w) / 2
-        draw_cta(canvas, cta, x, y, ch, w, f, c)
+        draw_cta(canvas, cta, x, y, ch, w, f, c, rtl)
+    if tl_boxes:
+        split_highlight(canvas, tl, tc, bg, tl_boxes, hi_rects, colors)
     return canvas, warnings
 
 
@@ -652,14 +855,17 @@ def run(job):
                     art = smart_crop(src, aw, ah)
                     if job.get("flip_art"):
                         art = art.transpose(Image.FLIP_LEFT_RIGHT)
-                    if lay["mode"] == "full" and not art_only and lay["style"] == "blend" and busy_area(art, lay["content"]):
-                        # the subject sits under the copy: move it aside and continue the scene's own background
-                        lay = reflow_layout(lay)
-                        lay["style"] = "blend"
-                        _, _, aw, ah = (round(v) for v in lay["art"])
-                        art = smart_crop(src, aw, ah)
-                        if job.get("flip_art"):
-                            art = art.transpose(Image.FLIP_LEFT_RIGHT)
+                    if lay["mode"] == "full" and not art_only:
+                        fl = fit_free(lay, art)
+                        if fl is None:
+                            # the subject fills the copy side: move it aside and continue the scene's own background
+                            lay = reflow_layout(lay)
+                            _, _, aw, ah = (round(v) for v in lay["art"])
+                            art = smart_crop(src, aw, ah)
+                            if job.get("flip_art"):
+                                art = art.transpose(Image.FLIP_LEFT_RIGHT)
+                        else:
+                            lay = fl
                     img, warns = render_banner(W, H, art, plogo, pcolors, {} if art_only else copy, lay)
                     if art_only:
                         warns.append("image only: the platform shows the title/CTA")
