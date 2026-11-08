@@ -1084,37 +1084,139 @@ def menchers_file2(logo, bg_hex, size=512):
     return f2, warn
 
 
-def menchers_element_file2(element, text, bg_hex, colors, size=512):
-    """Menchers 'file 2' with campaign content instead of the brand logo: the ad's element and a short
-    text, together inside the 365px circle on the brand colour."""
-    f2 = Image.new("RGBA", (size, size), rgb(bg_hex) + (255,))
+FONT_DISPLAY = os.path.join(HERE, "fonts", "Lalezar-Regular.ttf")
+
+
+def _sticker_text(text, max_w, max_h, fill, stroke_in, stroke_out, size_max=120):
+    """Heavy display headline with layered strokes + 3D drop, as an RGBA tile."""
+    path = FONT_DISPLAY if os.path.exists(FONT_DISPLAY) else FONT_HEAD
+    blk = None
+    for lines in (2, 1, 3):
+        b_ = fit(text, path, max_w * 0.86, max_h * 0.86, size_max, 20, lines, 0.98)
+        if b_ and (blk is None or b_["size"] > blk["size"] * 1.08):
+            blk = b_
+    if not blk:
+        return None
+    f, sz = blk["font"], blk["size"]
+    so, si = max(2, round(sz * 0.11)), max(2, round(sz * 0.065))
+    depth = max(2, round(sz * 0.07))
+    W_ = int(max(f.width(l) for l in blk["lines"]) + 2 * so + 8)
+    H_ = int(blk["height"] + sz * 0.6 + 2 * so + depth + 8)
+    layer = Image.new("RGBA", (W_, H_), (0, 0, 0, 0))
+
+    def draw_all(dr, dy, col, stroke, scol):
+        for i, line in enumerate(blk["lines"]):
+            t, kw = f.prep(line)
+            w = f.width(line)
+            dr.text((W_ / 2 - w / 2, so + 4 + dy + i * sz * blk["lh"]), t, font=f.font, fill=col,
+                    stroke_width=stroke, stroke_fill=scol, **kw)
+    dr = ImageDraw.Draw(layer)
+    # soft shadow
+    sh = Image.new("RGBA", (W_, H_), (0, 0, 0, 0))
+    draw_all(ImageDraw.Draw(sh), depth + sz * 0.05, (0, 0, 0, 120), so, (0, 0, 0, 120))
+    layer.alpha_composite(sh.filter(ImageFilter.GaussianBlur(max(2, sz * 0.06))))
+    # 3D extrusion in the outer stroke colour, darker
+    ext = tuple(int(v * 0.6) for v in stroke_out)
+    for k in range(depth, 0, -1):
+        draw_all(dr, k, ext, so, ext)
+    draw_all(dr, 0, stroke_out, so, stroke_out)
+    if stroke_in:
+        draw_all(dr, 0, stroke_in, si, stroke_in)
+    # fill with a gentle vertical gradient
+    fl = Image.new("RGBA", (W_, H_), (0, 0, 0, 0))
+    draw_all(ImageDraw.Draw(fl), 0, (255, 255, 255, 255), 0, None)
+    top = np.array(_lighten(hexof(fill), 0.12), dtype=np.float32)
+    bot = np.array(_lighten(hexof(fill), -0.12), dtype=np.float32)
+    t_ = np.linspace(0, 1, H_, dtype=np.float32)[:, None, None]
+    grad = np.broadcast_to(top * (1 - t_) + bot * t_, (H_, W_, 3)).astype(np.uint8)
+    g = Image.fromarray(np.ascontiguousarray(grad), "RGB").convert("RGBA")
+    g.putalpha(fl.getchannel("A"))
+    layer.alpha_composite(g)
+    return layer
+
+
+def _fits_circle(tile, x, y, cx, cy, R):
+    a = np.asarray(tile.getchannel("A"))
+    ys, xs = np.where(a > 40)
+    if not len(xs):
+        return True
+    d = np.sqrt((xs + x - cx) ** 2 + (ys + y - cy) ** 2)
+    return float(d.max()) <= R
+
+
+def menchers_element_file2(element, text, bg_hex, colors, size=512, layout="stack"):
+    """Menchers 'file 2' in the campaign style: a big sticker-style headline over the ad's element, on the
+    brand colour with a soft spotlight. Everything stays inside the kit's 365px circle (centre 256.5)."""
+    cx, cy, R = 256.5, 256.5, 182.5
+    base = np.array(rgb(bg_hex), dtype=np.float32)
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
+    rr = np.sqrt((xx - cx) ** 2 + (yy - (cy + 40)) ** 2) / 300
+    light = np.clip(1 - rr, 0, 1)[..., None] ** 1.5
+    bgc = base + (255 - base) * light * 0.22
+    f2 = Image.fromarray(bgc.clip(0, 255).astype(np.uint8), "RGB").convert("RGBA")
     warn = []
-    cx, cy, R = 256.5, 256.5, 365 / 2 * 0.96
     has_text = bool((text or "").strip())
+    # 1. element: large, lower part of the circle
     if element is not None:
         bb = element.getchannel("A").getbbox() if element.mode == "RGBA" else None
-        el = element.crop(bb) if bb else element
-        # element in the upper part of the circle, text in the lower chord
-        top, bot = cy - R * 0.92, cy + (R * 0.22 if has_text else R * 0.92)
-        hmax = bot - top
-        # width available at the element's vertical centre band (stay inside the circle)
-        wmax = 2 * math.sqrt(max(1, R * R - (max(abs(top - cy), abs(bot - cy)) * 0.55) ** 2))
-        s_ = min(hmax / el.height, wmax / el.width)
-        w, h = el.width * s_, el.height * s_
-        el = el.resize((max(1, round(w)), max(1, round(h))), Image.LANCZOS)
-        f2.alpha_composite(el, (round(cx - w / 2), round(top + (hmax - h) / 2)))
+        el = element.crop(bb) if bb else element.convert("RGBA")
+        # biggest size that still fits the disc, placed as low as it can go (like the reference tokens)
+        R_el = R + 30  # element may reach a bit past the 365 guide circle, never past the disc
+        behind = layout == "behind" or not has_text
+        top_lim = cy - R + 10 if behind else cy - 30
+        best = None
+        s_ = min(340 / el.width, (cy + R_el - top_lim) / el.height)
+        for _ in range(40):
+            w, h = max(1, round(el.width * s_)), max(1, round(el.height * s_))
+            elr = el.resize((w, h), Image.LANCZOS)
+            ex = round(cx - w / 2)
+            ey = None
+            lo_, hi_ = int(top_lim), int(cy + R_el - h * (0.95 if behind else 0.6))
+            for y_ in range(hi_, lo_ - 1, -4):
+                if _fits_circle(elr, ex, y_, cx, cy, R_el):
+                    ey = y_
+                    break
+            if ey is not None:
+                best = (elr, ex, ey, w, h)
+                break
+            s_ *= 0.94
+        if best is None:
+            warn.append("element could not fit")
+            elr, ex, ey, w, h = el.resize((2, 2)), 0, 0, 2, 2
+        else:
+            elr, ex, ey, w, h = best
+        # soft contact shadow + glow behind
+        glow = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+        gm = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(gm).ellipse((ex - w * 0.1, ey + h * 0.1, ex + w * 1.1, ey + h * 1.05), fill=70)
+        glow.putalpha(gm.filter(ImageFilter.GaussianBlur(30)))
+        f2.alpha_composite(glow)
+        f2.alpha_composite(elr, (ex, ey))
     else:
         warn.append("no element provided")
+    # 2. sticker headline on top
     if has_text:
-        ty0, ty1 = cy + R * 0.3, cy + R * 0.86
-        half = math.sqrt(max(1, R * R - (ty1 - cy) ** 2))
-        tw = 2 * half * 0.95
-        blk = fit(text, FONT_HEAD, tw, ty1 - ty0, 70, 18, 2, 1.12)
-        if blk:
-            tc = readable(colors.get("text") or "#ffffff", bg_hex)
-            layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-            draw_block(ImageDraw.Draw(layer), blk, cx, ty0 + (ty1 - ty0 - blk["height"]) / 2, "center", tc)
-            compose_text(f2, layer, tc, bg_hex, [(0, ty0, size, ty1 - ty0, blk["size"])])
+        dark_bg = lum(bg_hex) < 0.35
+        if dark_bg:
+            fill, s_in, s_out = rgb("#ffffff"), None, tuple(int(v * 0.32) for v in rgb(bg_hex))
+        else:
+            cand = [colors.get("primary"), colors.get("background"), colors.get("text"), "#3b1670"]
+            fc = next((c_ for c_ in cand if c_ and contrast(c_, bg_hex) >= 3 and lum(c_) < 0.3), "#3b1670")
+            fill, s_in, s_out = rgb(fc), (255, 255, 255), tuple(int(v * 0.45) for v in rgb(fc))
+        if element is not None and layout == "behind":
+            top_y, bot_y = cy - 40, cy + R - 25
+        else:
+            top_y, bot_y = cy - R + 18, (cy + 30 if element is not None else cy + R - 30)
+        for shrink in (1.0, 0.92, 0.85, 0.78, 0.7, 0.62):
+            mw = 2 * math.sqrt(max(1, R * R - (cy - top_y - 40) ** 2)) * shrink
+            tile = _sticker_text(text, min(390, mw + 60) * shrink, (bot_y - top_y) * shrink, fill, s_in, s_out, 160)
+            if tile is None:
+                continue
+            tx = round(cx - tile.width / 2)
+            ty = round(top_y + ((bot_y - top_y) - tile.height) / 2 + (6 if element is not None else 0))
+            if _fits_circle(tile, tx, ty, cx, cy, R + 6):
+                f2.alpha_composite(tile, (tx, ty))
+                break
         else:
             warn.append("Menchers text too long for the round logo")
     return f2, warn
@@ -1125,7 +1227,7 @@ def render_round_logo(logo, bg_hex, size=512, content=None):
     overlay light (overlay blend, 68%) at (24,268), clipped by a 511px circle at (1,99), with the group's
     effects (3 inner shadows + top gradient overlay). Transparent 512x512, cut at the bottom like the kit."""
     if content and content.get("mode") == "element":
-        f2, warn = menchers_element_file2(content.get("element"), content.get("text"), bg_hex, content.get("colors", {}), 512)
+        f2, warn = menchers_element_file2(content.get("element"), content.get("text"), bg_hex, content.get("colors", {}), 512, content.get("layout", "stack"))
     else:
         f2, warn = menchers_file2(logo, bg_hex, 512)
     H2 = 99 + 511 + 2
