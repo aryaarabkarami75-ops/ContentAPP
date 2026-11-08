@@ -70,7 +70,8 @@ print(SKILL)
 ایده انتخاب‌شده را به‌صورت یک تصویر افقی حرفه‌ای بساز. در پرامپت تصویر حتماً بنویس:
 - No text, no letters, no numbers, no logos, no signs, no buttons, no watermark, no price tags.
 - Full-bleed, edge to edge, no frame, no border, no device mockup.
-- One strong main subject placed in the LEFT half; the RIGHT ~45% is calm, empty background that continues the same scene (same colour and texture), for Persian text.
+- One strong main subject, compact and complete (nothing cut off by the frame), placed entirely in the LEFT half.
+- The RIGHT half is a clean, plain backdrop in the scene's main colour (solid or very soft gradient) with NOTHING in it: no props, no scenery, no light rays, no patterns. This is where the Persian text goes.
 - اگر رنگ‌های برند را داری: Use the brand colours [HEX ها] inside the scene itself: background, surfaces, lighting and props.
 
 **بررسی قبل از نشان دادن:** به تصویر نگاه کن. اگر سوژه یا اشیا وارد ۴۵٪ سمت راست شده‌اند (مثلاً صحنه شلوغ از لبه تا لبه)، همان تصویر را یک بار دیگر با تاکید بیشتر بر خالی بودن سمت راست بساز. متن هرگز روی اشیای تصویر نمی‌نشیند؛ اگر جای خالی نباشد، ابزار مجبور می‌شود تصویر را کوچک کند.
@@ -82,9 +83,10 @@ print(SKILL)
 
 ## مرحله ۵: سه شکل دیگر
 بعد از تایید، **همان صحنه** (همان سوژه، سبک، رنگ و حال‌وهوا) را دوباره بساز در:
-- مربع: سوژه در بالا-وسط، ۴۰٪ پایین خلوت
-- عمودی: سوژه در بالا-وسط، ۴۰٪ پایین خلوت
-- پانورامای عریض (حدود ۳ به ۱): سوژه وسط، پس‌زمینه خلوت در دو طرف
+- مربع: سوژه جمع‌وجور و کامل در نیمه بالا، نیمه پایین پس‌زمینه ساده و کاملاً خالی
+- عمودی: سوژه جمع‌وجور و کامل در نیمه بالا، نیمه پایین پس‌زمینه ساده و کاملاً خالی
+- پانورامای عریض (حدود ۳ به ۱): سوژه جمع‌وجور و کامل در یک‌سوم چپ، بقیه پس‌زمینه ساده و کاملاً خالی
+پس‌زمینه خالی همیشه همان رنگ اصلی صحنه است (تخت یا گرادیان خیلی نرم)، بدون هیچ شیء، منظره، پرتو نور یا طرح.
 صحنه را برای هر شکل بازچینی کن؛ کراپ، کشیدن یا نوار اضافه ممنوع. همان قوانین بدون متن.
 
 هر چهار تصویر را با پایتون ذخیره کن: `/mnt/data/landscape.png`، `/mnt/data/square.png`، `/mnt/data/portrait.png`، `/mnt/data/wide.png`. بررسی کن هر چهار فایل واقعاً وجود دارد. اگر ساخت یکی ممکن نبود، فقط همان‌هایی را که داری در `art` بگذار (حداقل `landscape.png`).
@@ -176,7 +178,13 @@ res = json.loads(r.stdout) if r.returncode == 0 else None
 
 ۴. **بررسی قبل از تحویل:** در `res["files"]` هر فایلی که `"text": "missing"` دارد یعنی تیتر جا نشده. اگر بود، از کاربر تیتر کوتاه‌تر بخواه و دوباره اجرا کن. مقدار `"image-only"` طبیعی است (طبق قوانین پلتفرم) و `"logo"` یعنی آیکون یا لوگوی گرد.
 
-۵. **پیام تحویل (دقیقاً همین، نه بیشتر):**
+۵. **تصویر اضافه برای سایزهای بدون جای خالی:** اگر `res["needs_art"]` خالی نیست، یعنی در آن سایزها تصویر جای خالی برای متن نداشت. برای هر مورد:
+   - یک تصویر تازه با تولید تصویر بساز، با پرامپت `item["prompt"]` (همان صحنه تاییدشده؛ قوانین بدون متن برقرار است).
+   - آن را در `item["file"]` ذخیره کن و این مسیر را به آخر لیست `art` در job.json اضافه کن.
+   - بعد از ساختن همه موارد، مرحله ۹ را دوباره اجرا کن. این کار را **حداکثر ۲ بار** تکرار کن، بعد تحویل بده.
+   - به کاربر درباره این کار چیزی نگو؛ فقط نتیجه نهایی را تحویل بده.
+
+۶. **پیام تحویل (دقیقاً همین، نه بیشتر):**
 - فقط تصویر پیش‌نمایش را **داخل چت** نشان بده، دقیقاً با این کد (هیچ تصویر دیگری را نمایش نده):
 ```python
 import matplotlib.pyplot as plt

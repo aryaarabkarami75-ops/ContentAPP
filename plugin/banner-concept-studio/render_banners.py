@@ -211,9 +211,63 @@ def smart_crop(img, W, H):
     return img.resize((W, H), Image.LANCZOS, box=(sx, sy, sx + cw, sy + ch))
 
 
+_SAL = {}
+
+
+def anchor_crop(img, W, H, text_side):
+    """Cover-crop that keeps the side opposite the copy (so the picture's own empty side lands under the text)."""
+    img = img.convert("RGB")
+    iw, ih = img.size
+    s = max(W / iw, H / ih)
+    cw, ch = min(iw, W / s), min(ih, H / s)
+    if text_side == "right":
+        sx, sy = 0.0, (ih - ch) / 2
+    elif text_side == "left":
+        sx, sy = iw - cw, (ih - ch) / 2
+    else:  # copy at the bottom: keep the top
+        sx, sy = (iw - cw) / 2, 0.0
+    return img.resize((W, H), Image.LANCZOS, box=(sx, sy, sx + cw, sy + ch))
+
+
+def plain_border(img, text_side):
+    """Are the borders the picture would be extended past plain backdrop? (the side it is anchored to may be busy)"""
+    a = np.asarray(img.convert("RGB").resize((64, 64), Image.BILINEAR), dtype=np.float32)
+    parts = {"top": a[:3], "bottom": a[-3:], "left": a[:, :3], "right": a[:, -3:]}
+    keep = {"right": "left", "left": "right", "bottom": "top"}.get(text_side)
+    ring = np.concatenate([v.reshape(-1, 3) for k, v in parts.items() if k != keep])
+    return float(ring.std(0).mean()) < 16
+
+
+def pad_fit(img, W, H, text_side, zoom=1.0):
+    """For pictures on a plain backdrop: fit the whole picture (zoomed out) and continue the plain
+    backdrop around it. Seamless because the backdrop itself is plain; never used on busy edges."""
+    img = img.convert("RGB")
+    iw, ih = img.size
+    s = min(W / iw, H / ih) * zoom
+    w, h = max(2, round(iw * s)), max(2, round(ih * s))
+    x = 0 if text_side == "right" else W - w if text_side == "left" else (W - w) // 2
+    y = 0 if text_side == "bottom" else (H - h) // 2
+    a = np.asarray(img.resize((w, h), Image.LANCZOS), dtype=np.float32)
+    # continue the plain backdrop by replicating its own border, then soften it (no streaks: the border is plain)
+    pad = np.pad(a, ((y, H - h - y), (x, W - w - x), (0, 0)), mode="edge")
+    soft = np.asarray(Image.fromarray(pad.clip(0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(max(3, min(W, H) * 0.08))), dtype=np.float32)
+    inside = np.zeros((H, W), dtype=np.float32)
+    inside[y:y + h, x:x + w] = 1
+    feather = max(2, min(w, h) * 0.04)
+    mask = np.asarray(Image.fromarray((inside * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(feather)), dtype=np.float32)[..., None] / 255
+    base = pad * mask + soft * (1 - mask)
+    return Image.fromarray(base.clip(0, 255).astype(np.uint8), "RGB")
+
+
 def pick_art(arts, w, h):
+    """Closest aspect ratio; among similar ratios prefer the picture with more empty space."""
     t = math.log(w / h)
-    return min(arts, key=lambda im: abs(math.log(im.width / im.height) - t))
+
+    def key(im):
+        if id(im) not in _SAL:
+            _SAL[id(im)] = float(saliency(im).mean())
+        return (round(abs(math.log(im.width / im.height) - t) / 0.2), _SAL[id(im)])
+    return min(arts, key=key)
 
 
 # ---------------------------------------------------------------- drawing helpers
@@ -350,7 +404,7 @@ def draw_cta(canvas, label, x, y, h, w, font, colors, rtl=True):
     canvas.alpha_composite(pill, (x0, y0))
     d = ImageDraw.Draw(canvas)
     col = readable(colors.get("ctaText"), acc)
-    arrow = h >= 26
+    arrow = h >= 26 and font.width(label) + h * 0.38 + h * 0.9 <= w
     aw_ = h * 0.22 if arrow else 0
     gap = h * 0.16 if arrow else 0
     tw = font.width(label)
@@ -462,7 +516,7 @@ def fit_free(lay, img):
                 break
         if edge is None:
             return nl
-        margin = W * 0.04
+        margin = W * 0.03
         if side == "right":
             x0 = max(cx, (edge + 1) / gw * W + margin)
             nl["content"] = (x0, cy, W - x0, ch)
@@ -471,7 +525,7 @@ def fit_free(lay, img):
             x1 = min(cx + cw, edge / gw * W - margin)
             nl["content"] = (0, cy, x1, ch)
             free = x1
-        if free < W * 0.34:
+        if free < W * 0.3:
             return None
     else:
         row = m.mean(1)
@@ -881,6 +935,7 @@ def run(job):
     out = rel(job.get("out", "output"))
     os.makedirs(out, exist_ok=True)
     results, previews = [], []
+    needs = []
     for p in chosen:
         pcolors = dict(colors, **p.get("brand", {}).get("colors", {}))
         plogo = None if p.get("noLogo") else logo
@@ -908,6 +963,35 @@ def run(job):
                     art = smart_crop(src, aw, ah)
                     if job.get("flip_art"):
                         art = art.transpose(Image.FLIP_LEFT_RIGHT)
+                    if lay["mode"] == "full" and not art_only:
+                        s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
+                        best = None
+                        sides = [lay["side"]]
+                        if lay["side"] == "bottom" and W / H >= 1.0:
+                            sides.append("right" if rtl else "left")
+                        for sd in sides:
+                            cand_l = dict(lay, side=sd)
+                            if sd != lay["side"]:
+                                cw_ = round(W * 0.56)
+                                cand_l["content"] = (W - cw_, 0, cw_, H) if sd == "right" else (0, 0, cw_, H)
+                            # crops: attention crop, and crops anchored away from the text side / to the top
+                            crops = [art, anchor_crop(s_, W, H, sd)]
+                            if plain_border(s_, sd):
+                                crops += [pad_fit(s_, W, H, sd, z) for z in (1.0, 0.85)]
+                            for cimg in crops:
+                                fl = fit_free(cand_l, cimg)
+                                if fl is not None:
+                                    free = fl["content"][2] * fl["content"][3]
+                                    if best is None or free > best[0]:
+                                        best = (free, fl, cimg)
+                            if best:
+                                break
+                        if best is None:
+                            # no clean space: move the picture aside; the strip/tower step below decides how to fill
+                            lay = reflow_layout(lay)
+                            art = smart_crop(s_, max(8, round(lay["art"][2])), max(8, round(lay["art"][3])))
+                        else:
+                            _, lay, art = best
                     if lay["mode"] in ("strip", "tower") and not art_only and lay["style"] == "blend":
                         # seam side of the picture is busy -> fading it out would smear objects: use the clean card
                         m_ = saliency(art)
@@ -916,20 +1000,23 @@ def run(job):
                             seam = m_[:, : max(1, gw_ // 4)] if lay["art"][0] > 0 else m_[:, -max(1, gw_ // 4):]
                         else:
                             seam = m_[-max(1, gh_ // 4):, :]
-                        if seam.mean() > 0.12:
+                        s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
+                        ts = "bottom" if lay["mode"] == "tower" else ("right" if lay["art"][0] == 0 else "left")
+                        if seam.mean() > 0.65 and plain_border(s_, ts):
+                            # plain backdrop: show the whole picture and continue its backdrop under the copy
+                            for z in (1.0, 0.85, 0.7):
+                                cand = pad_fit(s_, W, H, ts, z)
+                                cx_, cy_, cw_, ch_ = (round(v) for v in lay["content"])
+                                mm = saliency(cand.crop((cx_, cy_, cx_ + max(1, cw_), cy_ + max(1, ch_))))
+                                if mm.mean() < 0.02:
+                                    lay["card"] = True  # prebuilt full canvas
+                                    art = cand
+                                    seam = seam * 0
+                                    break
+                        if seam.mean() > 0.65:
                             lay["card"] = True
-                            s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
-                            art = card_canvas(s_, W, H, lay["art"])
-                    if lay["mode"] == "full" and not art_only:
-                        fl = fit_free(lay, art)
-                        if fl is None:
-                            # the subject fills the copy side: move it aside and continue the scene's own background
-                            lay = reflow_layout(lay)
-                            lay["card"] = True
-                            s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
-                            art = card_canvas(s_, W, H, lay["art"])
-                        else:
-                            lay = fl
+                            art = card_canvas(smart_crop(s_, max(8, round(lay["art"][2])), max(8, round(lay["art"][3]))), W, H, lay["art"])
+                            needs.append((W, H))
                     img, warns = render_banner(W, H, art, plogo, pcolors, {} if art_only else copy, lay)
                     if art_only:
                         warns.append("image only: the platform shows the title/CTA")
@@ -974,7 +1061,18 @@ def run(job):
             label = label[:-2]
         capf.draw(dsh, (x0 + cw / 2 - capf.width(label) / 2, y0 + rh - cap / 2 - 4), label, (60, 60, 70), anchor="lm")
     sheet.save(os.path.join(out, "preview.png"))
-    return {"report_fa": report_fa(results, os.path.basename(zpath)), "zip": zpath, "preview": os.path.join(out, "preview.png"), "count": len(results), "rtl": rtl, "raqm": RAQM, "unknown_placements": missing, "files": results}
+    buckets = {}
+    for w_, h_ in needs:
+        r_ = w_ / h_
+        b = "wide" if r_ >= 2.6 else "landscape" if r_ >= 1.15 else "square" if r_ >= 0.8 else "portrait"
+        buckets.setdefault(b, []).append(f"{w_}x{h_}")
+    side_fa = "سمت چپ" if rtl else "سمت راست"
+    needs_art = [{"shape": b, "sizes": v, "file": f"/mnt/data/fix_{b}.png",
+                  "prompt": {"wide": "very wide panorama (about 3:1)", "landscape": "landscape 3:2", "square": "square 1:1", "portrait": "portrait 2:3"}[b]
+                  + f": same scene, style, colours and lighting. Main subject compact and complete, fully inside the {'LEFT' if rtl else 'RIGHT'} half"
+                  + (" (or the top half for portrait)" if b == "portrait" else "")
+                  + f". The other half is a clean, plain backdrop of the scene's main colour (solid or very soft gradient) with nothing in it: no props, no scenery, no light rays, no text."} for b, v in buckets.items()]
+    return {"report_fa": report_fa(results, os.path.basename(zpath)), "needs_art": needs_art, "zip": zpath, "preview": os.path.join(out, "preview.png"), "count": len(results), "rtl": rtl, "raqm": RAQM, "unknown_placements": missing, "files": results}
 
 
 if __name__ == "__main__":
