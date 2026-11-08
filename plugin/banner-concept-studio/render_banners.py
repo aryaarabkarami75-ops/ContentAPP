@@ -379,21 +379,28 @@ def extend_art(art, W, H, box, axis):
     with a wide feathered seam, so there is no hard panel edge or flat colour block."""
     ax, ay, aw, ah = box
     canvas = Image.new("RGB", (W, H))
+    far_left = axis == "x" and ax > 0  # art on the right: continue its left edge leftwards
+    # low-frequency colour field: edge colours in a few soft bands, fading into the scene's overall tone
     if axis == "x":
-        e = max(2, round(aw * 0.06))
-        far_left = ax > 0  # art on the right: continue its left edge leftwards
-        strip = art.crop((0, 0, e, ah)) if far_left else art.crop((aw - e, 0, aw, ah))
-        fill = strip.resize((W, H), Image.BILINEAR)
+        e = max(2, round(aw * 0.12))
+        edge = art.crop((0, 0, e, ah)) if far_left else art.crop((aw - e, 0, aw, ah))
+        bands = edge.resize((1, 5), Image.BOX).resize((W, H), Image.BICUBIC)
     else:
-        e = max(2, round(ah * 0.06))
-        strip = art.crop((0, ah - e, aw, ah))
-        fill = strip.resize((W, H), Image.BILINEAR)
-    fill = fill.filter(ImageFilter.GaussianBlur(max(2, min(W, H) * 0.12)))
-    # soft low-frequency light so the field isn't dead flat
+        e = max(2, round(ah * 0.12))
+        edge = art.crop((0, ah - e, aw, ah))
+        bands = edge.resize((5, 1), Image.BOX).resize((W, H), Image.BICUBIC)
+    glob_ = art.resize((3, 2), Image.BOX).resize((W, H), Image.BICUBIC)
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    if axis == "x":
+        dist = ((ax - xx) if far_left else (xx - ax - aw)) / max(1, W - aw)
+    else:
+        dist = (yy - ay - ah) / max(1, H - ah)
+    k = np.clip(dist, 0, 1)[..., None] * 0.55
+    fill = np.asarray(bands, dtype=np.float32) * (1 - k) + np.asarray(glob_, dtype=np.float32) * k
+    fill = Image.fromarray(fill.clip(0, 255).astype(np.uint8), "RGB").filter(ImageFilter.GaussianBlur(max(4, min(W, H) * 0.2)))
     canvas.paste(fill)
     a = Image.new("RGB", (W, H))
     a.paste(art, (ax, ay))
-    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
     if axis == "x":
         feather = aw * 0.35
         d = (xx - ax) if far_left else (ax + aw - xx)
@@ -544,12 +551,27 @@ def render_banner(W, H, art, logo, colors, copy, layout):
         reg, busy = region_rgb(canvas, layout["content"])
         bg = hexof(reg)
         tc, need_scrim = pick_text(c, bg, busy)
+        if layout.get("scrim"):
+            tc, need_scrim = (c.get("text") if c.get("text") and lum(c["text"]) > 0.6 else "#ffffff"), True
         # CTA: brand accent if it stands out on this area, else a brand colour that does, else text colour
         for cand in (colors.get("accent"), colors.get("primary"), colors.get("background"), tc):
             if cand and contrast(cand, bg) >= 2.2:
                 c["accent"] = cand
                 break
-        if need_scrim:
+        if need_scrim and layout.get("scrim"):
+            v = np.array(reg, dtype=np.float32)
+            mx_ = max(1.0, float(v.max()))
+            deep = hexof(v / mx_ * 70)  # same hue, deep value
+            cx_, cy_, cw_, ch_ = layout["content"]
+            if side == "right":
+                canvas.alpha_composite(gradient(W, H, cx_, 0, cx_ - W * 0.28, 0, deep, 0.84, 0.0))
+            elif side == "left":
+                canvas.alpha_composite(gradient(W, H, cx_ + cw_, 0, cx_ + cw_ + W * 0.28, 0, deep, 0.84, 0.0))
+            else:
+                canvas.alpha_composite(gradient(W, H, 0, cy_, 0, cy_ - H * 0.25, deep, 0.86, 0.0))
+            reg, _ = region_rgb(canvas, layout["content"])
+            bg = hexof(reg)
+        elif need_scrim:
             # a soft veil of the area's own colour pushed away from the text colour (no flat brand block)
             shade = reg * (1.25 if lum(tc) < 0.4 else 0.45)
             shade = hexof(np.minimum(255, shade + (40 if lum(tc) < 0.4 else 0)))
@@ -855,7 +877,9 @@ def run(job):
                     art = smart_crop(src, aw, ah)
                     if job.get("flip_art"):
                         art = art.transpose(Image.FLIP_LEFT_RIGHT)
-                    if lay["mode"] == "full" and not art_only:
+                    if lay["mode"] == "full" and not art_only and saliency(art).mean() > 0.3:
+                        lay["scrim"] = True  # busy, full-frame scene: keep it whole, darken the copy side in its own tone
+                    elif lay["mode"] == "full" and not art_only:
                         fl = fit_free(lay, art)
                         if fl is None:
                             # the subject fills the copy side: move it aside and continue the scene's own background

@@ -175,7 +175,15 @@ res = json.loads(r.stdout) if r.returncode == 0 else None
 ۴. **بررسی قبل از تحویل:** در `res["files"]` هر فایلی که `"text": "missing"` دارد یعنی تیتر جا نشده. اگر بود، از کاربر تیتر کوتاه‌تر بخواه و دوباره اجرا کن. مقدار `"image-only"` طبیعی است (طبق قوانین پلتفرم) و `"logo"` یعنی آیکون یا لوگوی گرد.
 
 ۵. **پیام تحویل (دقیقاً همین، نه بیشتر):**
-- فقط تصویر `res["preview"]` را نشان بده (هیچ تصویر دیگری را نمایش نده).
+- فقط تصویر پیش‌نمایش را **داخل چت** نشان بده، دقیقاً با این کد (هیچ تصویر دیگری را نمایش نده):
+```python
+import matplotlib.pyplot as plt
+from PIL import Image
+im = Image.open(res["preview"])
+plt.figure(figsize=(im.width / 100, im.height / 100), dpi=100)
+plt.imshow(im); plt.axis("off"); plt.subplots_adjust(0, 0, 1, 1); plt.show()
+```
+- لینک دانلود `res["preview"]` را هم زیر آن بگذار.
 - متن `res["report_fa"]` را **عیناً** کپی کن.
 - لینک دانلود `res["zip"]` را بده.
 - در آخر فقط یک خط: «تغییری لازم است؟»
