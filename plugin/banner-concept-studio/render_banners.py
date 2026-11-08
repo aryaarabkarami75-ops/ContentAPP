@@ -81,7 +81,12 @@ class Text:
 
 
 def wrap(text, font, max_w):
-    words, lines, cur = (text or "").split(), [], ""
+    words, lines, cur = [], [], ""
+    for w in (text or "").split():
+        if w == "و" and words:  # keep the Persian 'and' at the end of its line, never opening one
+            words[-1] += " " + w
+        else:
+            words.append(w)
     for w in words:
         t = f"{cur} {w}" if cur else w
         if font.width(t) <= max_w or not cur:
@@ -103,7 +108,7 @@ def fit(text, path, max_w, max_h, max_size, min_size, max_lines, lh=1.3):
         lines = wrap(text, f, max_w)
         if len(lines) <= max_lines and max(f.width(l) for l in lines) <= max_w and len(lines) * size * lh <= max_h:
             if len(lines) > 1:  # balance the lines (no lonely last word)
-                lo, hi_ = max(f.width(w) for w in text.split()), max_w
+                lo, hi_ = max(f.width(w) for w in wrap(text, f, 0)), max_w
                 n = len(lines)
                 for _ in range(12):
                     mid = (lo + hi_) / 2
@@ -1087,11 +1092,22 @@ def menchers_file2(logo, bg_hex, size=512):
 FONT_DISPLAY = os.path.join(HERE, "fonts", "Lalezar-Regular.ttf")
 
 
-def _sticker_text(text, max_w, max_h, fill, stroke_in, stroke_out, size_max=120):
-    """Heavy display headline with layered strokes + 3D drop, as an RGBA tile."""
+def _sticker_text(text, max_w, max_h, fill, stroke_in, stroke_out, size_max=120, n_lines=None):
+    """Heavy display headline with layered strokes + 3D drop, as an RGBA tile.
+    n_lines: force (about) that many lines, tightly leaded, at size_max."""
     path = FONT_DISPLAY if os.path.exists(FONT_DISPLAY) else FONT_HEAD
     blk = None
-    for lines in (2, 1, 3):
+    if n_lines:
+        f0 = Text(path, int(size_max))
+        longest = max(f0.width(w) for w in wrap(text, f0, 0))
+        for k_ in (1.08, 1.2, 1.35, 1.5):
+            mw = max(longest, f0.width(text) / n_lines * k_)
+            blk = fit(text, path, mw, 10 ** 5, size_max, 20, n_lines, 0.92)
+            if blk and len(blk["lines"]) == n_lines:
+                break
+        else:
+            return None
+    for lines in (() if n_lines else (2, 1, 3)):
         b_ = fit(text, path, max_w * 0.86, max_h * 0.86, size_max, 20, lines, 0.98)
         if b_ and (blk is None or b_["size"] > blk["size"] * 1.08):
             blk = b_
@@ -1146,55 +1162,29 @@ def _fits_circle(tile, x, y, cx, cy, R):
 
 def menchers_element_file2(element, text, bg_hex, colors, size=512, layout="stack"):
     """Menchers 'file 2' in the campaign style: a big sticker-style headline over the ad's element, on the
-    brand colour with a soft spotlight. Everything stays inside the kit's 365px circle (centre 256.5)."""
-    cx, cy, R = 256.5, 256.5, 182.5
+    brand colour with a soft spotlight. Sized like the campaign tokens: headline and element go out to the
+    visible disc (file 1 shows file 2 through a 511px circle whose centre is at y 296.5 here, cut at y 454),
+    keeping a ~30px margin from its rim and the bottom cut."""
+    cx, cy, R = 256.5, 296.5, 226.0
+    BOT = 446  # bottom cut of the visible disc (454) minus a margin
     base = np.array(rgb(bg_hex), dtype=np.float32)
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
-    rr = np.sqrt((xx - cx) ** 2 + (yy - (cy + 40)) ** 2) / 300
+    rr = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2) / 300
     light = np.clip(1 - rr, 0, 1)[..., None] ** 1.5
     bgc = base + (255 - base) * light * 0.22
     f2 = Image.fromarray(bgc.clip(0, 255).astype(np.uint8), "RGB").convert("RGBA")
     warn = []
     has_text = bool((text or "").strip())
-    # 1. element: large, lower part of the circle
+    behind = layout == "behind"
+    # 1. element cutout (tight)
+    el = None
     if element is not None:
-        bb = element.getchannel("A").getbbox() if element.mode == "RGBA" else None
-        el = element.crop(bb) if bb else element.convert("RGBA")
-        # biggest size that still fits the disc, placed as low as it can go (like the reference tokens)
-        R_el = R + 30  # element may reach a bit past the 365 guide circle, never past the disc
-        behind = layout == "behind" or not has_text
-        top_lim = cy - R + 10 if behind else cy - 30
-        best = None
-        s_ = min(340 / el.width, (cy + R_el - top_lim) / el.height)
-        for _ in range(40):
-            w, h = max(1, round(el.width * s_)), max(1, round(el.height * s_))
-            elr = el.resize((w, h), Image.LANCZOS)
-            ex = round(cx - w / 2)
-            ey = None
-            lo_, hi_ = int(top_lim), int(cy + R_el - h * (0.95 if behind else 0.6))
-            for y_ in range(hi_, lo_ - 1, -4):
-                if _fits_circle(elr, ex, y_, cx, cy, R_el):
-                    ey = y_
-                    break
-            if ey is not None:
-                best = (elr, ex, ey, w, h)
-                break
-            s_ *= 0.94
-        if best is None:
-            warn.append("element could not fit")
-            elr, ex, ey, w, h = el.resize((2, 2)), 0, 0, 2, 2
-        else:
-            elr, ex, ey, w, h = best
-        # soft contact shadow + glow behind
-        glow = Image.new("RGBA", (size, size), (255, 255, 255, 0))
-        gm = Image.new("L", (size, size), 0)
-        ImageDraw.Draw(gm).ellipse((ex - w * 0.1, ey + h * 0.1, ex + w * 1.1, ey + h * 1.05), fill=70)
-        glow.putalpha(gm.filter(ImageFilter.GaussianBlur(30)))
-        f2.alpha_composite(glow)
-        f2.alpha_composite(elr, (ex, ey))
+        el = element.convert("RGBA")
+        bb = el.getchannel("A").getbbox()
+        el = el.crop(bb) if bb else el
     else:
         warn.append("no element provided")
-    # 2. sticker headline on top
+    # 2. sticker headline tiles, rendered big and scaled down to fit
     if has_text:
         dark_bg = lum(bg_hex) < 0.35
         if dark_bg:
@@ -1203,22 +1193,90 @@ def menchers_element_file2(element, text, bg_hex, colors, size=512, layout="stac
             cand = [colors.get("primary"), colors.get("background"), colors.get("text"), "#3b1670"]
             fc = next((c_ for c_ in cand if c_ and contrast(c_, bg_hex) >= 3 and lum(c_) < 0.3), "#3b1670")
             fill, s_in, s_out = rgb(fc), (255, 255, 255), tuple(int(v * 0.45) for v in rgb(fc))
-        if element is not None and layout == "behind":
-            top_y, bot_y = cy - 40, cy + R - 25
-        else:
-            top_y, bot_y = cy - R + 18, (cy + 30 if element is not None else cy + R - 30)
-        for shrink in (1.0, 0.92, 0.85, 0.78, 0.7, 0.62):
-            mw = 2 * math.sqrt(max(1, R * R - (cy - top_y - 40) ** 2)) * shrink
-            tile = _sticker_text(text, min(390, mw + 60) * shrink, (bot_y - top_y) * shrink, fill, s_in, s_out, 160)
-            if tile is None:
-                continue
-            tx = round(cx - tile.width / 2)
-            ty = round(top_y + ((bot_y - top_y) - tile.height) / 2 + (6 if element is not None else 0))
-            if _fits_circle(tile, tx, ty, cx, cy, R + 6):
-                f2.alpha_composite(tile, (tx, ty))
-                break
-        else:
+        # one tile per line count; the circle fit below keeps whichever comes out biggest
+        tiles = []
+        for n in (1, 2, 3):
+            t_ = _sticker_text(text, 0, 0, fill, s_in, s_out, 200, n_lines=n)
+            if t_ is not None:
+                bb = t_.getchannel("A").getbbox()
+                tiles.append(t_.crop(bb) if bb else t_)
+        if not tiles:
             warn.append("Menchers text too long for the round logo")
+    else:
+        tiles = []
+
+    def pick(cand):
+        best_ = None
+        for c_ in cand:  # cand is in 1, 2, 3 line order
+            if best_ is None or c_[0][0] > best_[0][0] * 1.12:
+                best_ = c_
+        return best_
+
+    def pts_of(img):
+        ys, xs = np.where(np.asarray(img.getchannel("A")) > 40)
+        st = max(1, int(math.sqrt(len(xs) / 15000)))
+        return xs[::st].astype(np.float32) - img.width / 2, ys[::st].astype(np.float32) - img.height / 2
+
+    def biggest(img, lim, y_lo, y_hi, top_max=None, bot_max=None):
+        """Largest scale (and centre y in [y_lo, y_hi]) at which img sits inside the circle of radius lim
+        centred on (cx, cy); optional limits on its top / bottom edge."""
+        xs, ys = pts_of(img)
+        best = (0.0, cy)
+        for yc in np.arange(y_lo, y_hi + 0.1, 3):
+            lo, hi = 0.0, 4 * lim / max(img.width, img.height) * 2
+            for _ in range(28):
+                m = (lo + hi) / 2
+                ok = float(np.sqrt((xs * m) ** 2 + (ys * m + yc - cy) ** 2).max()) <= lim
+                if ok and top_max is not None:
+                    ok = yc - img.height * m / 2 >= top_max
+                if ok:
+                    ok = yc + img.height * m / 2 <= min(BOT, bot_max if bot_max is not None else BOT)
+                lo, hi = (m, hi) if ok else (lo, m)
+            if lo > best[0] * 1.002:
+                best = (lo, yc)
+        return best
+
+    def put(img, s_, yc):
+        w_, h_ = max(1, round(img.width * s_)), max(1, round(img.height * s_))
+        im = img.resize((w_, h_), Image.LANCZOS)
+        x_, y_ = round(cx - w_ / 2), round(yc - h_ / 2)
+        return im, x_, y_
+
+    R_EL = R * 1.06  # the element may sit a little closer to the rim than the headline
+    placed_text, placed_el = None, None
+    if tiles and el is not None and behind:
+        # element as big as the circle, headline as big as the circle over its middle (bitcoin / wheel tokens)
+        s_e, yc_e = biggest(el, R_EL, cy - 30, cy + 10)
+        placed_el = put(el, s_e, yc_e)
+        cand = [(biggest(t_, R * 0.95, cy - 30, cy + 10), t_) for t_ in tiles]
+        (s_t, yc_t), t_ = pick(cand)
+        placed_text = put(t_, s_t, yc_t)
+    elif tiles and el is not None:
+        # headline across the top of the circle, element under it (gold box / copper coin tokens)
+        cand = [(biggest(t_, R, cy - R * 0.6, cy - R * 0.15, bot_max=cy + R * 0.02), t_) for t_ in tiles]
+        (s_t, yc_t), t_ = pick(cand)
+        placed_text = put(t_, s_t, yc_t)
+        tb = placed_text[2] + placed_text[0].height
+        s_e, yc_e = biggest(el, R_EL, tb - 10, cy + R_EL, top_max=tb - placed_text[0].height * 0.22)
+        placed_el = put(el, s_e, yc_e)
+    elif tiles:
+        cand = [(biggest(t_, R, cy - 20, cy + 20), t_) for t_ in tiles]
+        (s_t, yc_t), t_ = pick(cand)
+        placed_text = put(t_, s_t, yc_t)
+    elif el is not None:
+        s_e, yc_e = biggest(el, R_EL, cy - 20, cy + 20)
+        placed_el = put(el, s_e, yc_e)
+    if placed_el:
+        im, x_, y_ = placed_el
+        glow = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+        gm = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(gm).ellipse((x_ - im.width * 0.05, y_ + im.height * 0.2, x_ + im.width * 1.05, y_ + im.height * 1.05), fill=70)
+        glow.putalpha(gm.filter(ImageFilter.GaussianBlur(30)))
+        f2.alpha_composite(glow)
+        f2.alpha_composite(im, (x_, y_))
+    if placed_text:
+        im, x_, y_ = placed_text
+        f2.alpha_composite(im, (x_, y_))
     return f2, warn
 
 
