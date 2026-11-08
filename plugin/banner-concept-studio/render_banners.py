@@ -795,39 +795,84 @@ def render_banner(W, H, art, logo, colors, copy, layout):
     return canvas, warnings
 
 
-def render_round_logo(logo, bg_hex, size=512):
-    """Menchers round logo: transparent 512×512, brand-colour disc, logo inside the 365px safe circle."""
-    ss = 4
-    big = size * ss
-    mask = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(mask).ellipse((ss, ss, big - ss, big - ss), fill=255)
-    mask = mask.resize((size, size), Image.LANCZOS)
-    disc = Image.new("RGBA", (size, size), rgb(bg_hex) + (255,))
-    # soft light in the centre, like the kit's overlay layer
-    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
-    r = np.sqrt((xx - size / 2) ** 2 + (yy - size / 2) ** 2) / (size / 2)
-    light = np.zeros((size, size, 4), dtype=np.uint8)
-    light[..., :3] = 255
-    light[..., 3] = (np.clip(1 - r, 0, 1) ** 1.6 * 70).astype(np.uint8)
-    disc.alpha_composite(Image.fromarray(light, "RGBA"))
-    dark = np.zeros((size, size, 4), dtype=np.uint8)
-    dark[..., 3] = (np.clip((r - 0.75) / 0.25, 0, 1) * 60).astype(np.uint8)
-    disc.alpha_composite(Image.fromarray(dark, "RGBA"))
+def _blur(a, r):
+    if r <= 0:
+        return a
+    im = Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8), "L")
+    return np.asarray(im.filter(ImageFilter.GaussianBlur(r)), dtype=np.float32) / 255
+
+
+def _overlay(b, s):
+    return np.where(b < 0.5, 2 * b * s, 1 - 2 * (1 - b) * (1 - s))
+
+
+def _inner_shadow(alpha, size, choke=0.0):
+    """Photoshop-like inner shadow amount (0..1) for distance 0: strongest at the shape's edge."""
+    r = max(1.0, size / 3.0)
+    inv = _blur(1 - alpha, r)
+    amt = np.clip(inv * (1 + choke / 100 * 2) * 1.4, 0, 1)
+    return amt * alpha
+
+
+def menchers_file2(logo, bg_hex, size=512):
+    """Menchers kit 'file 2': brand-colour square, logo centred inside the 365px circle (min 243px)."""
+    f2 = Image.new("RGBA", (size, size), rgb(bg_hex) + (255,))
     warn = []
-    if logo is not None:
-        # Fit so the logo's diagonal stays inside the 365px circle (max), aiming for ~340px.
-        diag = math.hypot(logo.width, logo.height)
-        s = 340 / diag
-        w, h = logo.width * s, logo.height * s
-        if max(w, h) < 243 * 0.75:
-            warn.append("logo is very wide/tall; it may look small in the round slot")
-        lg = logo.resize((max(1, round(w)), max(1, round(h))), Image.LANCZOS)
-        disc.alpha_composite(lg, (round((size - w) / 2), round((size - h) / 2)))
-    else:
+    if logo is None:
         warn.append("no logo provided")
-    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    out.paste(disc, (0, 0), mask)
-    return out, warn
+        return f2, warn
+    bb = logo.getchannel("A").getbbox() if logo.mode == "RGBA" else None
+    lg = logo.crop(bb) if bb else logo
+    diag = math.hypot(lg.width, lg.height)
+    s = 365 * 0.97 / diag  # whole logo stays inside the 365px circle
+    w, h = lg.width * s, lg.height * s
+    if max(w, h) < 243:  # very wide/tall logo: grow to the 243px minimum along its long side if it still fits
+        s2 = 243 / max(lg.width, lg.height)
+        if math.hypot(lg.width * s2, lg.height * s2) <= 365:
+            s, w, h = s2, lg.width * s2, lg.height * s2
+        else:
+            warn.append("logo is very wide/tall; it is smaller than the 243px minimum")
+    lg = lg.resize((max(1, round(w)), max(1, round(h))), Image.LANCZOS)
+    f2.alpha_composite(lg, (round(256.5 - w / 2), round(256.5 - h / 2)))
+    return f2, warn
+
+
+def render_round_logo(logo, bg_hex, size=512):
+    """Menchers round logo, rebuilt from the kit's 'file 1' template: file 2 placed at (0,58), the kit's
+    overlay light (overlay blend, 68%) at (24,268), clipped by a 511px circle at (1,99), with the group's
+    effects (3 inner shadows + top gradient overlay). Transparent 512x512, cut at the bottom like the kit."""
+    f2, warn = menchers_file2(logo, bg_hex, 512)
+    H2 = 99 + 511 + 2
+    base = np.zeros((H2, 512, 4), dtype=np.float32)
+    base[58:58 + 512] = np.asarray(f2, dtype=np.float32) / 255
+    col = base[..., :3]
+    ovp = os.path.join(HERE, "assets", "menchers_overlay.png")
+    if os.path.exists(ovp):
+        o = np.asarray(Image.open(ovp).convert("RGBA"), dtype=np.float32) / 255
+        layer = np.zeros((H2, 512, 4), dtype=np.float32)
+        hh = min(o.shape[0], H2 - 268)
+        layer[268:268 + hh, 24:24 + o.shape[1]] = o[:hh]
+        a = layer[..., 3:4] * (173 / 255)
+        col = col * (1 - a) + _overlay(col, layer[..., :3]) * a
+    # circle mask (anti-aliased)
+    yy, xx = np.mgrid[0:H2, 0:512].astype(np.float32)
+    cx, cy, r = 1 + 255.5, 99 + 255.5, 255.5
+    mask = np.clip(r - np.sqrt((xx + 0.5 - cx) ** 2 + (yy + 0.5 - cy) ** 2) + 0.5, 0, 1)
+    # gradient overlay: black, 90deg reversed (opaque at top -> clear at bottom), scale 76%, overlay 24%
+    top, bot = 99, 99 + 511
+    span = (bot - top) * 0.76
+    mid = (top + bot) / 2
+    t = np.clip((yy - (mid - span / 2)) / span, 0, 1)[..., None]
+    ga = (1 - t) * 0.24
+    col = col * (1 - ga) + _overlay(col, 0.0) * ga
+    # inner shadows (black): overlay 18% size 62, overlay 100% size 40, normal 26% size 51 choke 8
+    for size_, op, mode, choke in ((62, 0.18, "overlay", 0), (40, 1.0, "overlay", 0), (51, 0.26, "normal", 8)):
+        amt = (_inner_shadow(mask, size_, choke) * op)[..., None]
+        tgt = _overlay(col, 0.0) if mode == "overlay" else np.zeros_like(col)
+        col = col * (1 - amt) + tgt * amt
+    out = np.dstack([col, mask * base[..., 3]])[:512]
+    img = Image.fromarray((np.clip(out, 0, 1) * 255).round().astype(np.uint8), "RGBA")
+    return img, warn
 
 
 # ---------------------------------------------------------------- encoding
