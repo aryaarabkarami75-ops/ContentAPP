@@ -166,6 +166,7 @@ print(SKILL)
   "text_on_image_only_slots": false,
   "flip_art": false,
   "style": "blend",
+  "scale": "full",
   "menchers": {"mode": "logo"},
   "out": "/mnt/data/output"
 }
@@ -218,6 +219,7 @@ plt.imshow(im); plt.axis("off"); plt.subplots_adjust(0, 0, 1, 1); plt.show()
 - سوژه و متن در یک طرف افتاده‌اند ← `"flip_art": true`
 - متن روی جایگاه‌های فقط‌تصویر ← `"text_on_image_only_slots": true`
 - پنل رنگی برند کنار تصویر (سبک قدیمی) ← `"style": "panel"`
+- فایل‌ها دقیقاً به اندازهٔ پیکسلی پلتفرم (به‌جای رندر کامل با کیفیت بالا) ← `"scale": 1`
 - تیتر یا زیرتیتر تازه ← `copy`
 - برجسته کردن کلمه‌ای از تیتر ← `copy.highlight`
 - جایگاه بیشتر ← `placements`

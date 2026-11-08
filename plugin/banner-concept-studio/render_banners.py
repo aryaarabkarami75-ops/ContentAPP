@@ -39,6 +39,7 @@ FONT_HEAD = os.path.join(HERE, "fonts", "Vazirmatn-FD-ExtraBold.ttf")
 FONT_BODY = os.path.join(HERE, "fonts", "Vazirmatn-FD-Medium.ttf")
 FONT_CTA = os.path.join(HERE, "fonts", "Vazirmatn-FD-Bold.ttf")
 RAQM = features.check("raqm")
+U = 1  # render scale: every px rule below is in banner (1x) pixels times U
 RTL_RE = re.compile(r"[֐-ࣿיִ-ﻼ]")
 
 # ---------------------------------------------------------------- text shaping
@@ -192,7 +193,7 @@ def compute_layout(W, H, rtl=False, art_only=False, safe=None):
     if art_only:
         return dict(mode="art", side="none", art=(0, 0, W, H), content=(0, 0, 0, 0), W=W, H=H, rtl=rtl)
     if r >= 2.6:
-        wide = r > 5 and H >= 120
+        wide = r > 5 and H >= 120 * U
         aw = round(min(W * (0.5 if wide else 0.38), H * (3 if wide else 1.7)))
         art = (0 if rtl else W - aw, 0, aw, H)
         content = (aw if rtl else 0, 0, W - aw, H)
@@ -331,10 +332,10 @@ def cta_size(label, h, max_w):
     while True:
         f = Text(FONT_CTA, size)
         tw = f.width(label)
-        if tw + size * 1.6 <= max_w or size <= 8:
+        if tw + size * 1.6 <= max_w or size <= 8 * U:
             break
         size -= 1
-    extra = h * 0.38 if h >= 26 else 0
+    extra = h * 0.38 if h >= 26 * U else 0
     return f, math.ceil(min(max_w, tw + extra + max(h * 1.2, size * 1.8)))
 
 
@@ -437,7 +438,7 @@ def draw_cta(canvas, label, x, y, h, w, font, colors, rtl=True):
     canvas.alpha_composite(pill, (x0, y0))
     d = ImageDraw.Draw(canvas)
     col = readable(colors.get("ctaText"), acc)
-    arrow = h >= 26 and font.width(label) + h * 0.38 + h * 0.9 <= w
+    arrow = h >= 26 * U and font.width(label) + h * 0.38 + h * 0.9 <= w
     aw_ = h * 0.22 if arrow else 0
     gap = h * 0.16 if arrow else 0
     tw = font.width(label)
@@ -700,7 +701,7 @@ def tighten(W, H, art, logo, colors, copy, lay, img):
         nl["content"] = (cx - sign * dt, cy, cw, ch)
     else:
         gap = tb[1] - sb[3]
-        excess = gap - max(H * 0.04, 8)
+        excess = gap - max(H * 0.04, 8 * U)
         if excess < H * 0.06:
             return None
         de = excess * 0.5 if plain_strip(bg, "top") else 0.0
@@ -831,7 +832,7 @@ def element_layout(W, H, rtl, el, field, text_w=None):
     m = max(4, round(min(W, H) * 0.06))
     if r >= 1.0:  # side by side
         if r >= 2.6:
-            eh = H * (0.9 if H < 130 else 0.84)
+            eh = H * (0.9 if H < 130 * U else 0.84)
             maxw = W * 0.3
         elif r >= 1.4:
             eh, maxw = H * 0.74, W * 0.4
@@ -953,13 +954,13 @@ def render_banner(W, H, art, logo, colors, copy, layout):
     hi_rects = []
     headline, sub, cta = copy.get("headline", ""), copy.get("sub", ""), copy.get("cta", "")
     md = min(W, H)
-    pad = max(6, round(md * 0.07))
+    pad = max(6 * U, round(md * 0.07))
     cx, cy, cw, chh = layout["content"]
     box = (cx + pad, cy + pad, cw - 2 * pad, chh - 2 * pad)
     start = "right" if rtl else "left"
 
     # inline row for short strips (728×90, 468×60, 1081×144 ...)
-    if mode == "strip" and H < 130:
+    if mode == "strip" and H < 130 * U:
         bx, by, bw_, bh = box
         X = (lambda dist, w=0: bx + bw_ - dist - w) if rtl else (lambda dist, w=0: bx + dist)
         dist = 0
@@ -970,14 +971,14 @@ def render_banner(W, H, art, logo, colors, copy, layout):
             dist += lw + pad
         ctaw, f, ch = 0, None, 0
         if cta:
-            ch = round(max(18, H * 0.4))
+            ch = round(max(18 * U, H * 0.4))
             f, ctaw = cta_size(cta, ch, bw_ * 0.38)
         tw = bw_ - ctaw - pad - dist
-        two = H >= 70 and sub
-        c1 = fit(headline, FONT_HEAD, tw, (0.6 if two else 1) * bh, bh * (0.5 if two else 0.62), 9, 1, 1.25)
-        c2 = fit(headline, FONT_HEAD, tw, (0.6 if two else 1) * bh, bh * (0.5 if two else 0.62), 9, 2, 1.2)
+        two = H >= 70 * U and sub
+        c1 = fit(headline, FONT_HEAD, tw, (0.6 if two else 1) * bh, bh * (0.5 if two else 0.62), 9 * U, 1, 1.25)
+        c2 = fit(headline, FONT_HEAD, tw, (0.6 if two else 1) * bh, bh * (0.5 if two else 0.62), 9 * U, 2, 1.2)
         head = max([x for x in (c1, c2) if x], key=lambda x: x["size"] * (1.15 if len(x["lines"]) == 1 else 1), default=None)
-        sb = fit(sub, FONT_BODY, tw, bh - head["height"] - 2, head["size"] * 0.6, 9, 1, 1.3) if (two and head) else None
+        sb = fit(sub, FONT_BODY, tw, bh - head["height"] - 2, head["size"] * 0.6, 9 * U, 1, 1.3) if (two and head) else None
         if not head:
             warnings.append("headline too long for this size")
             if cta:
@@ -1021,8 +1022,8 @@ def render_banner(W, H, art, logo, colors, copy, layout):
             top += lh + pad * 0.7
             avail -= lh + pad * 0.7
     sm = "full" if layout.get("reflowed") else mode
-    ch = round(min(max(md * (0.2 if sm == "strip" else 0.11), 22), avail * 0.22)) if cta else 0
-    gap = round(max(4, avail * 0.04))
+    ch = round(min(max(md * (0.2 if sm == "strip" else 0.11), 22 * U), avail * 0.22)) if cta else 0
+    gap = round(max(4 * U, avail * 0.04))
     text_h = avail - (ch + gap * 1.6 if cta else 0)
     head_max = min(bw_ * 0.12, text_h * 0.5) if sm == "strip" else min(md * 0.15, text_h * 0.5)
     head, sb = None, None
@@ -1031,10 +1032,10 @@ def render_banner(W, H, art, logo, colors, copy, layout):
     for lines in sorted({pref, 3}):
         share = 0.62 if sub else 1
         for tries in range(4):
-            head = fit(headline, FONT_HEAD, bw_, text_h * share, head_max * (1 - tries * 0.12), 10, lines, 1.18)
+            head = fit(headline, FONT_HEAD, bw_, text_h * share, head_max * (1 - tries * 0.12), 10 * U, lines, 1.18)
             if not head or not sub:
                 break
-            sb = fit(sub, FONT_BODY, bw_, text_h - head["height"] - gap, max(10, head["size"] * 0.4), max(9, round(md * 0.03)), min(3, lines + 1), 1.5)
+            sb = fit(sub, FONT_BODY, bw_, text_h - head["height"] - gap, max(10 * U, head["size"] * 0.4), max(9 * U, round(md * 0.03)), min(3, lines + 1), 1.5)
             if sb:
                 break
             share -= 0.08
@@ -1420,6 +1421,8 @@ def report_fa(results, zip_name):
     big = [r for r in results if any("over the" in w for w in r["warnings"])]
     if big:
         lines.append("⚠️ بیشتر از سقف حجم: " + "، ".join(fa(r["size"].replace("x", "×")) for r in big))
+    if any(r.get("scale", 1) > 1 for r in results):
+        lines.append("🔍 رندر کامل: هر بنر با همان چیدمان و نسبت، در ۲ تا ۴ برابر پیکسل ساخته شده (در نام فایل ‎@2x / @3x / @4x‎). برای آپلود، به اندازهٔ اصلی کوچکش کن.")
     lines.append(f"📦 فایل ZIP: {zip_name}")
     return "\n".join(lines)
 
@@ -1449,7 +1452,15 @@ def run(job):
         pcolors = dict(colors, **p.get("brand", {}).get("colors", {}))
         plogo = None if p.get("noLogo") else logo
         for s in p["sizes"]:
-            W, H = s["width"], s["height"]
+            W0, H0 = s["width"], s["height"]
+            # full render: same layout, drawn at k x the pixels (job "scale": "full" (default) | 1 | 2 | 3 | 4)
+            sc = job.get("scale", "full")
+            k = max(2 if max(W0, H0) <= 2000 else 1, min(4, 1600 // max(W0, H0))) if sc == "full" else max(1, min(4, int(sc)))
+            if s.get("kind") == "round-logo":
+                k = 1
+            global U
+            U = k
+            W, H = W0 * k, H0 * k
             fmt = (s.get("formats") or ["png"])[0]
             if s.get("kind") == "round-logo":
                 tstate = "logo"
@@ -1504,7 +1515,7 @@ def run(job):
                                 img, warns = img2, warns2
                         done = not any("headline too long" in w for w in warns)
                         if done and l1.get("_small"):
-                            needs.append((W, H))
+                            needs.append((W0, H0))
                     if not done:
                         if lay["mode"] == "full" and not art_only:
                             s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
@@ -1559,7 +1570,7 @@ def run(job):
                             if seam.mean() > 0.65:
                                 lay["card"] = True
                                 art = card_canvas(smart_crop(s_, max(8, round(lay["art"][2])), max(8, round(lay["art"][3]))), W, H, lay["art"])
-                                needs.append((W, H))
+                                needs.append((W0, H0))
                         img, warns = render_banner(W, H, art, plogo, pcolors, {} if art_only else copy, lay)
                         if not art_only and job.get("tighten", True):
                             nl = tighten(W, H, art, plogo, pcolors, copy, lay, img)
@@ -1569,20 +1580,20 @@ def run(job):
                                     img, warns = img2, warns2
                     if art_only:
                         warns.append("image only: the platform shows the title/CTA")
-                data, q = encode(img, fmt, s.get("maxKB"))
+                data, q = encode(img, fmt, s.get("maxKB") if k == 1 else None)
                 ext = "jpg" if fmt == "jpg" else fmt
-                sid = "" if s["id"] == f"{W}x{H}" else f"{s['id']}_"
-                fname = f"{p['id']}/{name}_{p['id']}_{sid}{W}x{H}.{ext}"
+                sid = "" if s["id"] == f"{W0}x{H0}" else f"{s['id']}_"
+                fname = f"{p['id']}/{name}_{p['id']}_{sid}{W0}x{H0}" + (f"@{k}x" if k > 1 else "") + f".{ext}"
             path = os.path.join(out, fname)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as fh:
                 fh.write(data)
             kb = round(len(data) / 1024)
-            if s.get("maxKB") and kb > s["maxKB"]:
+            if s.get("maxKB") and kb > s["maxKB"] and k == 1:
                 warns.append(f"{kb} KB is over the {s['maxKB']} KB limit")
             if tstate == "ok" and any("headline too long" in w for w in warns):
                 tstate = "missing"
-            results.append({"text": tstate, "file": fname, "placement": p.get("name_fa") or p["name"], "slot": s.get("label_fa") or s.get("label") or s["id"], "size": f"{W}x{H}", "kb": kb, "warnings": warns})
+            results.append({"text": tstate, "file": fname, "placement": p.get("name_fa") or p["name"], "slot": s.get("label_fa") or s.get("label") or s["id"], "size": f"{W0}x{H0}", "px": f"{W}x{H}", "scale": k, "kb": kb, "warnings": warns})
             previews.append((fname, img))
     with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(results, fh, ensure_ascii=False, indent=2)
