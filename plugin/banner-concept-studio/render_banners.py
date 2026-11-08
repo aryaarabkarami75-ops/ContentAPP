@@ -102,6 +102,16 @@ def fit(text, path, max_w, max_h, max_size, min_size, max_lines, lh=1.3):
         f = Text(path, size)
         lines = wrap(text, f, max_w)
         if len(lines) <= max_lines and max(f.width(l) for l in lines) <= max_w and len(lines) * size * lh <= max_h:
+            if len(lines) > 1:  # balance the lines (no lonely last word)
+                lo, hi_ = max(f.width(w) for w in text.split()), max_w
+                n = len(lines)
+                for _ in range(12):
+                    mid = (lo + hi_) / 2
+                    if len(wrap(text, f, mid)) <= n:
+                        hi_ = mid
+                    else:
+                        lo = mid
+                lines = wrap(text, f, hi_ + 1)
             return {"font": f, "lines": lines, "size": size, "lh": lh, "height": len(lines) * size * lh}
         size -= max(1, round(size * 0.04))
     return None
@@ -591,6 +601,96 @@ def reflow_layout(lay):
     return nl
 
 
+def shift_bg(img, dx, dy=0):
+    """Move the background by (dx, dy); the uncovered strip continues the plain edge (only used when that edge is plain)."""
+    a = np.asarray(img.convert("RGB"), dtype=np.float32)
+    H, W = a.shape[:2]
+    dx, dy = int(round(dx)), int(round(dy))
+    pad = np.pad(a, ((max(0, dy), max(0, -dy)), (max(0, dx), max(0, -dx)), (0, 0)), mode="edge")
+    y0, x0 = max(0, -dy), max(0, -dx)
+    out = pad[y0:y0 + H, x0:x0 + W]
+    soft = np.asarray(Image.fromarray(out.clip(0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(max(2, min(W, H) * 0.05))), dtype=np.float32)
+    m = np.zeros((H, W), dtype=np.float32)
+    if dx > 0:
+        m[:, :dx] = 1
+    if dx < 0:
+        m[:, W + dx:] = 1
+    if dy > 0:
+        m[:dy, :] = 1
+    if dy < 0:
+        m[H + dy:, :] = 1
+    m = np.asarray(Image.fromarray((m * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(max(1, min(W, H) * 0.02))), dtype=np.float32)[..., None] / 255
+    return Image.fromarray((out * (1 - m) + soft * m).clip(0, 255).astype(np.uint8), "RGB").convert("RGBA")
+
+
+def plain_strip(img, side, frac=0.04):
+    a = np.asarray(img.convert("RGB"), dtype=np.float32)
+    H, W = a.shape[:2]
+    k = max(2, int(W * frac)) if side in ("left", "right") else max(2, int(H * frac))
+    part = {"left": a[:, :k], "right": a[:, W - k:], "top": a[:k], "bottom": a[H - k:]}[side]
+    return float(part.reshape(-1, 3).std(0).mean()) < 14
+
+
+def ink_box(before, after):
+    d = np.abs(np.asarray(after.convert("RGB"), dtype=np.int16) - np.asarray(before.convert("RGB"), dtype=np.int16)).max(2) > 18
+    ys, xs = np.where(d)
+    if not len(xs):
+        return None
+    return xs.min(), ys.min(), xs.max(), ys.max()
+
+
+def subject_box(img):
+    m = saliency(img)
+    gh, gw = m.shape
+    H, W = img.size[1], img.size[0]
+    cols = np.where(m.mean(0) > 0.06)[0]
+    rows = np.where(m.mean(1) > 0.06)[0]
+    if not len(cols) or not len(rows):
+        return None
+    return cols.min() / gw * W, rows.min() / gh * H, (cols.max() + 1) / gw * W, (rows.max() + 1) / gh * H
+
+
+def tighten(W, H, art, logo, colors, copy, lay, img):
+    """Second pass: pull element and copy together when a wide gap opens between them, so long banners
+    are composed as one group instead of 'picture far left, text far right'."""
+    if lay["mode"] == "art" or "_bg" not in lay:
+        return None
+    bg, tb = lay["_bg"], ink_box(lay["_pre_text"], img)
+    sb = subject_box(bg)
+    if tb is None or sb is None:
+        return None
+    horiz = lay["mode"] == "strip" or lay["side"] in ("left", "right")
+    nl = {k: v for k, v in lay.items() if not k.startswith("_")}
+    cx, cy, cw, ch = lay["content"]
+    if horiz:
+        text_right = tb[0] > sb[2] - 1
+        gap = (tb[0] - sb[2]) if text_right else (sb[0] - tb[2])
+        target = max(W * 0.05, H * 0.12)
+        excess = gap - target
+        if excess < W * 0.06:
+            return None
+        far = "left" if text_right else "right"
+        de = excess * 0.5 if plain_strip(bg, far) else 0.0
+        dt = excess - de
+        sign = 1 if text_right else -1
+        nl["pre_bg"] = shift_bg(bg, sign * de) if de else bg
+        nl["content"] = (cx - sign * dt, cy, cw, ch)
+    else:
+        gap = tb[1] - sb[3]
+        excess = gap - max(H * 0.04, 8)
+        if excess < H * 0.06:
+            return None
+        de = excess * 0.5 if plain_strip(bg, "top") else 0.0
+        dt = excess - de
+        nl["pre_bg"] = shift_bg(bg, 0, de) if de else bg
+        nl["content"] = (cx, cy - dt, cw, ch + dt) if lay["mode"] == "tower" else (cx, cy - dt, cw, ch)
+        if lay["mode"] == "full" and lay["side"] == "bottom":
+            nl["content"] = (cx, cy - dt, cw, ch)
+            nl["_bottom_pad"] = dt
+    nl["pre_bg"] = nl["pre_bg"].convert("RGBA")
+    return nl
+
+
 def region_rgb(img, box):
     x, y, w, h = (max(0, round(v)) for v in box)
     r = img.convert("RGB").crop((x, y, max(x + 1, x + w), max(y + 1, y + h))).resize((24, 24), Image.BILINEAR)
@@ -612,6 +712,137 @@ def pick_text(colors, bg_hex, busy):
     return best, True
 
 
+# ---------------------------------------------------------------- element composition (plain-backdrop pictures)
+def element_parts(src):
+    """If the picture is a subject on a plain backdrop, return (backdrop field, element RGBA cutout)."""
+    key = id(src)
+    if key in _ELEM:
+        return _ELEM[key]
+    res = None
+    img = src.convert("RGB")
+    iw, ih = img.size
+    sb = subject_box(img)
+    if sb is not None:
+        x0, y0, x1, y1 = sb
+        mx, my = (x1 - x0) * 0.06, (y1 - y0) * 0.06
+        x0, y0, x1, y1 = max(0, x0 - mx), max(0, y0 - my), min(iw, x1 + mx), min(ih, y1 + my)
+        a = np.asarray(img, dtype=np.float32)
+        outside = np.ones((ih, iw), bool)
+        outside[int(y0):int(math.ceil(y1)), int(x0):int(math.ceil(x1))] = False
+        cover = (x1 - x0) * (y1 - y0) / (iw * ih)
+        # texture check at a fixed scale: the backdrop must be smooth (no sand, fabric, light rays)
+        sm_ = np.asarray(img.convert("L").resize((256, max(8, round(256 * ih / iw))), Image.BILINEAR), dtype=np.float32)
+        gy, gx = sm_.shape
+        g_ = np.zeros_like(sm_)
+        g_[:, 1:] += np.abs(np.diff(sm_, axis=1))
+        g_[1:, :] += np.abs(np.diff(sm_, axis=0))
+        o_ = np.ones_like(sm_, dtype=bool)
+        o_[int(y0 / ih * gy):int(math.ceil(y1 / ih * gy)), int(x0 / iw * gx):int(math.ceil(x1 / iw * gx))] = False
+        smooth = o_.any() and float(g_[o_].mean()) < 1.2
+        if smooth and outside.sum() > iw * ih * 0.2 and cover < 0.75:
+            # backdrop model: per-row mean of backdrop pixels, plus residual noise check
+            rows = np.array([a[r][outside[r]].mean(0) if outside[r].any() else np.full(3, np.nan) for r in range(ih)])
+            ok = ~np.isnan(rows[:, 0])
+            if ok.sum() > ih * 0.3:
+                idx = np.arange(ih)
+                for c_ in range(3):
+                    rows[:, c_] = np.interp(idx, idx[ok], rows[ok, c_])
+                resid = (a - rows[:, None, :])[outside]
+                _RES[key] = float(resid.std(0).mean())
+                if _RES[key] < 12:
+                    field = np.repeat(rows[:, None, :], 8, axis=1)
+                    field = Image.fromarray(field.clip(0, 255).astype(np.uint8), "RGB")
+                    crop = img.crop((int(x0), int(y0), int(math.ceil(x1)), int(math.ceil(y1))))
+                    ca = np.asarray(crop, dtype=np.float32)
+                    br = rows[int(y0):int(y0) + ca.shape[0]][:, None, :]
+                    dist = np.sqrt(((ca - br) ** 2).sum(2))
+                    al = np.clip((dist - 8) / 26, 0, 1)
+                    # keep only real objects (detail), not soft light/rays that differ in colour
+                    sm = saliency(img).astype(np.uint8) * 255
+                    smi = Image.fromarray(sm, "L").resize((iw, ih), Image.BILINEAR).crop((int(x0), int(y0), int(math.ceil(x1)), int(math.ceil(y1))))
+                    smi = smi.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(max(2, min(ca.shape[:2]) * 0.03)))
+                    al = al * np.clip(np.asarray(smi, dtype=np.float32) / 255 * 1.6, 0, 1)
+                    am = np.asarray(Image.fromarray((al * 255).astype(np.uint8), "L").filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(1.5)), dtype=np.float32) / 255
+                    # fade out towards the crop's edges (except where the picture itself ends) so no box shows
+                    hh_, ww_ = am.shape
+                    fy, fx = np.mgrid[0:hh_, 0:ww_].astype(np.float32)
+                    f = max(3.0, min(hh_, ww_) * 0.08)
+                    dl = fx + (1e6 if x0 <= 0 else 0)
+                    dr = (ww_ - 1 - fx) + (1e6 if x1 >= iw else 0)
+                    dt = fy + (1e6 if y0 <= 0 else 0)
+                    db = (hh_ - 1 - fy) + (1e6 if y1 >= ih else 0)
+                    am = am * np.clip(np.minimum.reduce([dl, dr, dt, db]) / f, 0, 1)
+                    am = Image.fromarray((am * 255).astype(np.uint8), "L")
+                    el = crop.convert("RGBA")
+                    el.putalpha(am)
+                    res = (field, el)
+    _ELEM[key] = res
+    return res
+
+
+def key_backdrop(img):
+    """Cut a subject off a plain backdrop: alpha from the distance to the border colour (row by row)."""
+    a = np.asarray(img, dtype=np.float32)
+    h, w = a.shape[:2]
+    k = max(2, round(min(w, h) * 0.03))
+    edge = np.concatenate([a[:, :k], a[:, w - k:]], axis=1)
+    rows = np.median(edge, axis=1)
+    dist = np.sqrt(((a - rows[:, None, :]) ** 2).sum(2))
+    al = np.clip((dist - 10) / 28, 0, 1)
+    am = Image.fromarray((al * 255).astype(np.uint8), "L").filter(ImageFilter.MedianFilter(3)).filter(ImageFilter.GaussianBlur(1.2))
+    out = img.convert("RGBA")
+    out.putalpha(am)
+    bb = am.point(lambda v: 255 if v > 40 else 0).getbbox()
+    return out.crop(bb) if bb else out
+
+
+_ELEM = {}
+_RES = {}
+
+
+def element_layout(W, H, rtl, el, field, text_w=None):
+    """Arrange element + copy as one group for this exact size. Returns (background, layout)."""
+    r = W / H
+    canvas = field.resize((W, H), Image.BICUBIC).convert("RGBA")
+    ew_, eh_ = el.size
+    m = max(4, round(min(W, H) * 0.06))
+    if r >= 1.0:  # side by side
+        if r >= 2.6:
+            eh = H * (0.9 if H < 130 else 0.84)
+            maxw = W * 0.3
+        elif r >= 1.4:
+            eh, maxw = H * 0.74, W * 0.4
+        else:
+            eh, maxw = H * 0.6, W * 0.4
+        s = min(eh / eh_, maxw / ew_)
+        w, h = ew_ * s, eh_ * s
+        gap = max(m * 0.8, W * 0.035)
+        free = W - 2 * m - w - gap
+        tw = min(free, text_w) if text_w else free
+        cluster = w + gap + tw
+        x0 = (W - cluster) / 2
+        ex = x0 if rtl else x0 + tw + gap
+        tx = ex + w + gap if rtl else x0
+        ey = (H - h) / 2
+        lay = dict(mode="strip", side="none", art=(ex, ey, w, h), content=(tx - m * 0.5, 0, tw + m, H), W=W, H=H, rtl=rtl, reflowed=r < 2.6)
+    else:  # stacked: element on top, copy below
+        eh = H * (0.42 if r < 0.5 else 0.5)
+        s = min(eh / eh_, W * 0.86 / ew_)
+        w, h = ew_ * s, eh_ * s
+        gap = max(m * 0.6, H * 0.03)
+        th = min(H - 2 * m - h - gap, text_w) if text_w else H - 2 * m - h - gap
+        cluster = h + gap + th
+        y0 = (H - cluster) / 2
+        ex, ey = (W - w) / 2, y0
+        lay = dict(mode="tower", side="none", art=(ex, ey, w, h), content=(0, ey + h + gap - m * 0.5, W, th + m), W=W, H=H, rtl=rtl, reflowed=True)
+    lay["_small"] = r < 1.0 and h < H * 0.25
+    elr = el.resize((max(1, round(w)), max(1, round(h))), Image.LANCZOS)
+    canvas.alpha_composite(elr, (round(ex), round(ey)))
+    lay["pre_bg"] = canvas
+    lay["style"] = "blend"
+    return lay
+
+
 # ---------------------------------------------------------------- banner
 def render_banner(W, H, art, logo, colors, copy, layout):
     c = dict(colors)
@@ -621,7 +852,9 @@ def render_banner(W, H, art, logo, colors, copy, layout):
     ax, ay, aw, ah = (round(v) for v in layout["art"])
     warnings = []
     blend = layout.get("style", "blend") == "blend"
-    if art is not None and layout.get("card"):
+    if layout.get("pre_bg") is not None:
+        canvas = layout["pre_bg"].convert("RGBA").copy()
+    elif art is not None and layout.get("card"):
         canvas = art.convert("RGBA")
     elif art is not None and blend and mode in ("strip", "tower"):
         canvas = extend_art(art, W, H, (ax, ay, aw, ah), "x" if mode == "strip" else "y").convert("RGBA")
@@ -631,6 +864,7 @@ def render_banner(W, H, art, logo, colors, copy, layout):
             canvas.alpha_composite(art.convert("RGBA"), (ax, ay))
     if mode == "art":
         return canvas, warnings
+    layout["_bg"] = canvas.copy()
     bg = c["background"]
     if blend:
         reg, busy = region_rgb(canvas, layout["content"])
@@ -688,6 +922,7 @@ def render_banner(W, H, art, logo, colors, copy, layout):
         tc = None
 
     tc = tc or readable(c.get("text"), bg)
+    layout["_pre_text"] = canvas.copy()
     tl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(tl)
     tl_boxes = []
@@ -710,28 +945,35 @@ def render_banner(W, H, art, logo, colors, copy, layout):
             lw = min(bw_ * 0.18, logo.width / logo.height * lh)
             paste_logo(canvas, logo, X(dist, lw), (H - lh) / 2, lw, lh, start)
             dist += lw + pad
-        ctaw = 0
+        ctaw, f, ch = 0, None, 0
         if cta:
             ch = round(max(18, H * 0.4))
             f, ctaw = cta_size(cta, ch, bw_ * 0.38)
-            draw_cta(canvas, cta, X(bw_ - ctaw, ctaw), (H - ch) / 2, ch, ctaw, f, c, rtl)
         tw = bw_ - ctaw - pad - dist
         two = H >= 70 and sub
-        head = fit(headline, FONT_HEAD, tw, (0.6 if two else 1) * bh, bh * (0.5 if two else 0.62), 9, 2, 1.25)
+        c1 = fit(headline, FONT_HEAD, tw, (0.6 if two else 1) * bh, bh * (0.5 if two else 0.62), 9, 1, 1.25)
+        c2 = fit(headline, FONT_HEAD, tw, (0.6 if two else 1) * bh, bh * (0.5 if two else 0.62), 9, 2, 1.2)
+        head = max([x for x in (c1, c2) if x], key=lambda x: x["size"] * (1.15 if len(x["lines"]) == 1 else 1), default=None)
         sb = fit(sub, FONT_BODY, tw, bh - head["height"] - 2, head["size"] * 0.6, 9, 1, 1.3) if (two and head) else None
         if not head:
             warnings.append("headline too long for this size")
+            if cta:
+                draw_cta(canvas, cta, X(bw_ - ctaw, ctaw), (H - ch) / 2, ch, ctaw, f, c, rtl)
         else:
             total = head["height"] + (sb["height"] + 2 if sb else 0)
             y = (H - total) / 2
             tx = bx + bw_ - dist if rtl else bx + dist
             draw_block(d, head, tx, y, start, tc, hi, hi_rects)
             tl_boxes.append((0, y, W, head["height"], head["size"]))
+            used = max(head["font"].width(l) for l in head["lines"])
             if sb:
                 draw_block(d, sb, tx, y + head["height"] + 2, start, tc)
                 tl_boxes.append((0, y + head["height"] + 2, W, sb["height"], sb["size"]))
+                used = max(used, max(sb["font"].width(l) for l in sb["lines"]))
             elif sub:
                 warnings.append("subtext dropped (no room)")
+            if cta:
+                draw_cta(canvas, cta, X(dist + used + pad * 1.4, ctaw), (H - ch) / 2, ch, ctaw, f, c, rtl)
             split_highlight(canvas, tl, tc, bg, tl_boxes, hi_rects, colors)
         return canvas, warnings
 
@@ -759,17 +1001,22 @@ def render_banner(W, H, art, logo, colors, copy, layout):
     ch = round(min(max(md * (0.2 if sm == "strip" else 0.11), 22), avail * 0.22)) if cta else 0
     gap = round(max(4, avail * 0.04))
     text_h = avail - (ch + gap * 1.6 if cta else 0)
-    head_max = min(bw_ * 0.12, text_h * 0.42) if sm == "strip" else min(md * 0.15, text_h * 0.5)
+    head_max = min(bw_ * 0.12, text_h * 0.5) if sm == "strip" else min(md * 0.15, text_h * 0.5)
     head, sb = None, None
-    share = 0.62 if sub else 1
-    for tries in range(4):
-        head = fit(headline, FONT_HEAD, bw_, text_h * share, head_max * (1 - tries * 0.12), 10, 3, 1.18)
-        if not head or not sub:
+    asp = bw_ / max(1, text_h)
+    pref = 1 if asp >= 3.2 else 2 if asp >= 1.5 else 3  # wide copy areas read in fewer, longer lines
+    for lines in sorted({pref, 3}):
+        share = 0.62 if sub else 1
+        for tries in range(4):
+            head = fit(headline, FONT_HEAD, bw_, text_h * share, head_max * (1 - tries * 0.12), 10, lines, 1.18)
+            if not head or not sub:
+                break
+            sb = fit(sub, FONT_BODY, bw_, text_h - head["height"] - gap, max(10, head["size"] * 0.4), max(9, round(md * 0.03)), min(3, lines + 1), 1.5)
+            if sb:
+                break
+            share -= 0.08
+        if head and (sb or not sub) and head["size"] >= head_max * 0.55:
             break
-        sb = fit(sub, FONT_BODY, bw_, text_h - head["height"] - gap, max(10, head["size"] * 0.4), max(9, round(md * 0.03)), 3, 1.5)
-        if sb:
-            break
-        share -= 0.08
     if head and sub and not sb:
         warnings.append("subtext dropped (no room)")
     if not head and headline:
@@ -837,11 +1084,50 @@ def menchers_file2(logo, bg_hex, size=512):
     return f2, warn
 
 
-def render_round_logo(logo, bg_hex, size=512):
+def menchers_element_file2(element, text, bg_hex, colors, size=512):
+    """Menchers 'file 2' with campaign content instead of the brand logo: the ad's element and a short
+    text, together inside the 365px circle on the brand colour."""
+    f2 = Image.new("RGBA", (size, size), rgb(bg_hex) + (255,))
+    warn = []
+    cx, cy, R = 256.5, 256.5, 365 / 2 * 0.96
+    has_text = bool((text or "").strip())
+    if element is not None:
+        bb = element.getchannel("A").getbbox() if element.mode == "RGBA" else None
+        el = element.crop(bb) if bb else element
+        # element in the upper part of the circle, text in the lower chord
+        top, bot = cy - R * 0.92, cy + (R * 0.22 if has_text else R * 0.92)
+        hmax = bot - top
+        # width available at the element's vertical centre band (stay inside the circle)
+        wmax = 2 * math.sqrt(max(1, R * R - (max(abs(top - cy), abs(bot - cy)) * 0.55) ** 2))
+        s_ = min(hmax / el.height, wmax / el.width)
+        w, h = el.width * s_, el.height * s_
+        el = el.resize((max(1, round(w)), max(1, round(h))), Image.LANCZOS)
+        f2.alpha_composite(el, (round(cx - w / 2), round(top + (hmax - h) / 2)))
+    else:
+        warn.append("no element provided")
+    if has_text:
+        ty0, ty1 = cy + R * 0.3, cy + R * 0.86
+        half = math.sqrt(max(1, R * R - (ty1 - cy) ** 2))
+        tw = 2 * half * 0.95
+        blk = fit(text, FONT_HEAD, tw, ty1 - ty0, 70, 18, 2, 1.12)
+        if blk:
+            tc = readable(colors.get("text") or "#ffffff", bg_hex)
+            layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            draw_block(ImageDraw.Draw(layer), blk, cx, ty0 + (ty1 - ty0 - blk["height"]) / 2, "center", tc)
+            compose_text(f2, layer, tc, bg_hex, [(0, ty0, size, ty1 - ty0, blk["size"])])
+        else:
+            warn.append("Menchers text too long for the round logo")
+    return f2, warn
+
+
+def render_round_logo(logo, bg_hex, size=512, content=None):
     """Menchers round logo, rebuilt from the kit's 'file 1' template: file 2 placed at (0,58), the kit's
     overlay light (overlay blend, 68%) at (24,268), clipped by a 511px circle at (1,99), with the group's
     effects (3 inner shadows + top gradient overlay). Transparent 512x512, cut at the bottom like the kit."""
-    f2, warn = menchers_file2(logo, bg_hex, 512)
+    if content and content.get("mode") == "element":
+        f2, warn = menchers_element_file2(content.get("element"), content.get("text"), bg_hex, content.get("colors", {}), 512)
+    else:
+        f2, warn = menchers_file2(logo, bg_hex, 512)
     H2 = 99 + 511 + 2
     base = np.zeros((H2, 512, 4), dtype=np.float32)
     base[58:58 + 512] = np.asarray(f2, dtype=np.float32) / 255
@@ -989,7 +1275,19 @@ def run(job):
             fmt = (s.get("formats") or ["png"])[0]
             if s.get("kind") == "round-logo":
                 tstate = "logo"
-                img, warns = render_round_logo(logo, brand.get("logo_bg") or pcolors.get("primary") or pcolors["background"], W)
+                mc = dict(job.get("menchers") or {})
+                if mc.get("mode") == "element":
+                    if mc.get("element") and os.path.exists(rel(mc["element"])):
+                        e_img = Image.open(rel(mc["element"]))
+                        if e_img.mode == "RGBA" and e_img.getchannel("A").getextrema()[0] < 250:
+                            mc["element"] = e_img  # already a cut-out
+                        else:
+                            mc["element"] = key_backdrop(e_img.convert("RGB"))
+                    if not isinstance(mc.get("element"), Image.Image):  # fall back to the campaign element cut from the approved picture
+                        pr = next((element_parts(a_) for a_ in arts if element_parts(a_) is not None), None)
+                        mc["element"] = pr[1] if pr else smart_crop(arts[0], 512, 512).convert("RGBA")
+                    mc["colors"] = pcolors
+                img, warns = render_round_logo(logo, brand.get("logo_bg") or pcolors.get("primary") or pcolors["background"], W, mc)
                 data, q = encode(img, "png")
                 fname = f"{p['id']}/{name}_logo_round.png"
             else:
@@ -1008,61 +1306,89 @@ def run(job):
                     art = smart_crop(src, aw, ah)
                     if job.get("flip_art"):
                         art = art.transpose(Image.FLIP_LEFT_RIGHT)
-                    if lay["mode"] == "full" and not art_only:
-                        s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
-                        best = None
-                        sides = [lay["side"]]
-                        if lay["side"] == "bottom" and W / H >= 1.0:
-                            sides.append("right" if rtl else "left")
-                        for sd in sides:
-                            cand_l = dict(lay, side=sd)
-                            if sd != lay["side"]:
-                                cw_ = round(W * 0.56)
-                                cand_l["content"] = (W - cw_, 0, cw_, H) if sd == "right" else (0, 0, cw_, H)
-                            # crops: attention crop, and crops anchored away from the text side / to the top
-                            crops = [art, anchor_crop(s_, W, H, sd)]
-                            if plain_border(s_, sd):
-                                crops += [pad_fit(s_, W, H, sd, z) for z in (1.0, 0.85)]
-                            for cimg in crops:
-                                fl = fit_free(cand_l, cimg)
-                                if fl is not None:
-                                    free = fl["content"][2] * fl["content"][3]
-                                    if best is None or free > best[0]:
-                                        best = (free, fl, cimg)
-                            if best:
+                    done = False
+                    parts = None
+                    if not art_only and job.get("style") != "panel":
+                        for cand in [src] + [a_ for a_ in arts if a_ is not src]:
+                            parts = element_parts(cand.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else cand)
+                            if parts is not None:
                                 break
-                        if best is None:
-                            # no clean space: move the picture aside; the strip/tower step below decides how to fill
-                            lay = reflow_layout(lay)
-                            art = smart_crop(s_, max(8, round(lay["art"][2])), max(8, round(lay["art"][3])))
-                        else:
-                            _, lay, art = best
-                    if lay["mode"] in ("strip", "tower") and not art_only and lay["style"] == "blend":
-                        # seam side of the picture is busy -> fading it out would smear objects: use the clean card
-                        m_ = saliency(art)
-                        gh_, gw_ = m_.shape
-                        if lay["mode"] == "strip":
-                            seam = m_[:, : max(1, gw_ // 4)] if lay["art"][0] > 0 else m_[:, -max(1, gw_ // 4):]
-                        else:
-                            seam = m_[-max(1, gh_ // 4):, :]
-                        s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
-                        ts = "bottom" if lay["mode"] == "tower" else ("right" if lay["art"][0] == 0 else "left")
-                        if seam.mean() > 0.65 and plain_border(s_, ts):
-                            # plain backdrop: show the whole picture and continue its backdrop under the copy
-                            for z in (1.0, 0.85, 0.7):
-                                cand = pad_fit(s_, W, H, ts, z)
-                                cx_, cy_, cw_, ch_ = (round(v) for v in lay["content"])
-                                mm = saliency(cand.crop((cx_, cy_, cx_ + max(1, cw_), cy_ + max(1, ch_))))
-                                if mm.mean() < 0.02:
-                                    lay["card"] = True  # prebuilt full canvas
-                                    art = cand
-                                    seam = seam * 0
-                                    break
-                        if seam.mean() > 0.65:
-                            lay["card"] = True
-                            art = card_canvas(smart_crop(s_, max(8, round(lay["art"][2])), max(8, round(lay["art"][3]))), W, H, lay["art"])
+                    if parts is not None:
+                        field, el = parts
+                        l1 = element_layout(W, H, rtl, el, field)
+                        img, warns = render_banner(W, H, None, plogo, pcolors, copy, l1)
+                        tb = ink_box(l1["_pre_text"], img)
+                        if tb is not None and not any("headline too long" in w for w in warns):
+                            used = (tb[2] - tb[0]) if (W / H >= 1.0) else (tb[3] - tb[1])
+                            l2 = element_layout(W, H, rtl, el, field, used + 4)
+                            img2, warns2 = render_banner(W, H, None, plogo, pcolors, copy, l2)
+                            if not any("headline too long" in w for w in warns2) and len(warns2) <= len(warns):
+                                img, warns = img2, warns2
+                        done = not any("headline too long" in w for w in warns)
+                        if done and l1.get("_small"):
                             needs.append((W, H))
-                    img, warns = render_banner(W, H, art, plogo, pcolors, {} if art_only else copy, lay)
+                    if not done:
+                        if lay["mode"] == "full" and not art_only:
+                            s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
+                            best = None
+                            sides = [lay["side"]]
+                            if lay["side"] == "bottom" and W / H >= 1.0:
+                                sides.append("right" if rtl else "left")
+                            for sd in sides:
+                                cand_l = dict(lay, side=sd)
+                                if sd != lay["side"]:
+                                    cw_ = round(W * 0.56)
+                                    cand_l["content"] = (W - cw_, 0, cw_, H) if sd == "right" else (0, 0, cw_, H)
+                                # crops: attention crop, and crops anchored away from the text side / to the top
+                                crops = [art, anchor_crop(s_, W, H, sd)]
+                                if plain_border(s_, sd):
+                                    crops += [pad_fit(s_, W, H, sd, z) for z in (1.0, 0.85)]
+                                for cimg in crops:
+                                    fl = fit_free(cand_l, cimg)
+                                    if fl is not None:
+                                        free = fl["content"][2] * fl["content"][3]
+                                        if best is None or free > best[0]:
+                                            best = (free, fl, cimg)
+                                if best:
+                                    break
+                            if best is None:
+                                # no clean space: move the picture aside; the strip/tower step below decides how to fill
+                                lay = reflow_layout(lay)
+                                art = smart_crop(s_, max(8, round(lay["art"][2])), max(8, round(lay["art"][3])))
+                            else:
+                                _, lay, art = best
+                        if lay["mode"] in ("strip", "tower") and not art_only and lay["style"] == "blend":
+                            # seam side of the picture is busy -> fading it out would smear objects: use the clean card
+                            m_ = saliency(art)
+                            gh_, gw_ = m_.shape
+                            if lay["mode"] == "strip":
+                                seam = m_[:, : max(1, gw_ // 4)] if lay["art"][0] > 0 else m_[:, -max(1, gw_ // 4):]
+                            else:
+                                seam = m_[-max(1, gh_ // 4):, :]
+                            s_ = src.transpose(Image.FLIP_LEFT_RIGHT) if job.get("flip_art") else src
+                            ts = "bottom" if lay["mode"] == "tower" else ("right" if lay["art"][0] == 0 else "left")
+                            if seam.mean() > 0.65 and plain_border(s_, ts):
+                                # plain backdrop: show the whole picture and continue its backdrop under the copy
+                                for z in (1.0, 0.85, 0.7):
+                                    cand = pad_fit(s_, W, H, ts, z)
+                                    cx_, cy_, cw_, ch_ = (round(v) for v in lay["content"])
+                                    mm = saliency(cand.crop((cx_, cy_, cx_ + max(1, cw_), cy_ + max(1, ch_))))
+                                    if mm.mean() < 0.02:
+                                        lay["card"] = True  # prebuilt full canvas
+                                        art = cand
+                                        seam = seam * 0
+                                        break
+                            if seam.mean() > 0.65:
+                                lay["card"] = True
+                                art = card_canvas(smart_crop(s_, max(8, round(lay["art"][2])), max(8, round(lay["art"][3]))), W, H, lay["art"])
+                                needs.append((W, H))
+                        img, warns = render_banner(W, H, art, plogo, pcolors, {} if art_only else copy, lay)
+                        if not art_only and job.get("tighten", True):
+                            nl = tighten(W, H, art, plogo, pcolors, copy, lay, img)
+                            if nl is not None:
+                                img2, warns2 = render_banner(W, H, art, plogo, pcolors, copy, nl)
+                                if not any("headline too long" in w for w in warns2):
+                                    img, warns = img2, warns2
                     if art_only:
                         warns.append("image only: the platform shows the title/CTA")
                 data, q = encode(img, fmt, s.get("maxKB"))
