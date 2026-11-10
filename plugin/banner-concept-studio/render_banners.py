@@ -1351,6 +1351,11 @@ def encode(img, fmt, max_kb=None):
             buf = io.BytesIO()
             img.quantize(colors=colors, method=Image.Quantize.FASTOCTREE).save(buf, "PNG", optimize=True)
         return buf.getvalue(), None
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGBA")
+        flat = Image.new("RGBA", img.size, (255, 255, 255, 255))  # transparent parts become white
+        flat.alpha_composite(img)
+        img = flat
     rgbimg = img.convert("RGB")
     # full-resolution colour (4:4:4) keeps coloured text and edges sharp; only step down if over the limit
     for q, sub in ((95, 0), (92, 0), (88, 0), (85, 2), (78, 2), (70, 2), (60, 2), (50, 2), (40, 2)):
@@ -1461,7 +1466,7 @@ def run(job):
             global U
             U = k
             W, H = W0 * k, H0 * k
-            fmt = (s.get("formats") or ["png"])[0]
+            fmt = "jpg"  # every output is JPG
             if s.get("kind") == "round-logo":
                 tstate = "logo"
                 mc = dict(job.get("menchers") or {})
@@ -1477,8 +1482,8 @@ def run(job):
                         mc["element"] = pr[1] if pr else smart_crop(arts[0], 512, 512).convert("RGBA")
                     mc["colors"] = pcolors
                 img, warns = render_round_logo(logo, brand.get("logo_bg") or pcolors.get("primary") or pcolors["background"], W, mc)
-                data, q = encode(img, "png")
-                fname = f"{p['id']}/{name}_logo_round.png"
+                data, q = encode(img, "jpg")
+                fname = f"{p['id']}/{name}_logo_round.jpg"
             else:
                 logo_only = s.get("logoOnly") and plogo is not None
                 art_only = (not logo_only) and s.get("artOnly") and not job.get("text_on_image_only_slots")

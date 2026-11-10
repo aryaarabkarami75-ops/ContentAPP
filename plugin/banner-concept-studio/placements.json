@@ -101,7 +101,6 @@
           "width": 192,
           "height": 192,
           "formats": [
-            "png",
             "jpg"
           ],
           "label": "Push icon",
@@ -239,7 +238,7 @@
           "width": 688,
           "height": 116,
           "formats": [
-            "png"
+            "jpg"
           ],
           "maxKB": 200,
           "label": "Header banner"
@@ -249,7 +248,7 @@
           "width": 1081,
           "height": 144,
           "formats": [
-            "png"
+            "jpg"
           ],
           "maxKB": 200,
           "label": "General banner"
@@ -436,7 +435,7 @@
           "width": 512,
           "height": 512,
           "formats": [
-            "png"
+            "jpg"
           ],
           "label": "Round brand logo (transparent)",
           "kind": "round-logo"
