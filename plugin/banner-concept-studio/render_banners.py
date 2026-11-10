@@ -1372,6 +1372,96 @@ def slug(s):
 
 
 # ---------------------------------------------------------------- main
+
+# ---------------------------------------------------------------- GPT-designed banners
+# Sizes in this ratio range get a full banner designed by the image model (text included); the script only
+# crops and resizes it. Thinner strips / towers, image-only slots and the Menchers round logo stay script-made.
+DESIGN_MIN, DESIGN_MAX = 0.5, 2.4
+CANVASES = {"wide": (1536, 1024), "square": (1024, 1024), "tall": (1024, 1536)}
+
+
+def design_eligible(s):
+    r = s["width"] / s["height"]
+    return (s.get("kind") != "round-logo" and not s.get("artOnly") and not s.get("logoOnly")
+            and DESIGN_MIN <= r <= DESIGN_MAX)
+
+
+def plan_designs(sizes, copy, rtl=True):
+    """Group the sizes into as few designs as possible; each design has a centred safe area that survives
+    every crop in its group, so no text or element is ever cut."""
+    ratios = sorted({(w, h) for w, h in sizes}, key=lambda t: t[0] / t[1])
+    groups, cur = [], []
+    for w, h in ratios:
+        if cur and (w / h) / (cur[0][0] / cur[0][1]) > 1.35:
+            groups.append(cur)
+            cur = []
+        cur.append((w, h))
+    if cur:
+        groups.append(cur)
+    plan = []
+    for i, g in enumerate(groups, 1):
+        rmin, rmax = g[0][0] / g[0][1], g[-1][0] / g[-1][1]
+        gm = math.sqrt(rmin * rmax)
+        cname = min(CANVASES, key=lambda c: abs(math.log((CANVASES[c][0] / CANVASES[c][1]) / gm)))
+        C = CANVASES[cname][0] / CANVASES[cname][1]
+        wf, hf = min(1.0, rmin / C), min(1.0, C / rmax)
+        did = f"d{i}"
+        plan.append({"id": did, "canvas": cname, "size": "%dx%d" % CANVASES[cname], "sizes": ["%dx%d" % t for t in g],
+                     "safe": [round(wf, 3), round(hf, 3)], "file": f"/mnt/data/design_{did}.png",
+                     "prompt": design_prompt(cname, wf, hf, copy, rtl)})
+    return plan
+
+
+def design_prompt(cname, wf, hf, copy, rtl=True):
+    shape = {"wide": "landscape 3:2", "square": "square 1:1", "tall": "portrait 2:3"}[cname]
+    lines = [f"A finished, high-end {shape} advertising banner in exactly the style, colours, lighting and main element of the approved campaign visual. "]
+    lines.append(f'Persian (Farsi, right-to-left) text, spelled exactly, letter by letter: headline "{copy.get("headline", "")}"')
+    if copy.get("sub"):
+        lines.append(f'; smaller line "{copy["sub"]}"')
+    lines.append(f'; a call-to-action button that reads "{copy.get("cta", "")}". If a logo image is attached, place it small and unchanged.')
+    lines.append(" Bold modern Persian typeface, big readable headline with soft depth and shadow, main element big and complete, text and element never overlapping.")
+    if wf < 0.97 or hf < 0.97:
+        lines.append(f" IMPORTANT: put ALL text, the button, the logo and the main element inside the centred area that is {round(wf * 100)}% of the width and {round(hf * 100)}% of the height; outside that area only continue the background (no text, no objects), because the edges will be cropped.")
+    lines.append(" No other words, letters, numbers or watermarks.")
+    return "".join(lines)
+
+
+def crop_design(img, W0, H0, k):
+    """Crop to the target ratio, then a high-quality resize. Never pads, never upscales past the crop.
+    Returns (image, scale, share of the design's content that the crop cut off)."""
+    iw, ih = img.size
+    r = W0 / H0
+    if iw / ih > r:
+        cw, ch = ih * r, ih
+    else:
+        cw, ch = iw, iw / r
+    # slide the window to keep the most content (text, button, element); report how much would be cut
+    m = saliency(img, 160)
+    m = np.where(m > 0.25, m, 0)
+    gh, gw = m.shape
+    tot = float(m.sum()) or 1.0
+    best = None
+    if cw < iw - 1:
+        n = round(cw / iw * gw)
+        col = m.sum(axis=0)
+        for i in range(0, gw - n + 1):
+            v = float(col[i:i + n].sum())
+            score = v - abs(i - (gw - n) / 2) * 1e-3  # prefer the centre on ties
+            if best is None or score > best[0]:
+                best = (score, v, i * iw / gw, (ih - ch) / 2)
+    else:
+        n = round(ch / ih * gh)
+        row = m.sum(axis=1)
+        for i in range(0, gh - n + 1):
+            v = float(row[i:i + n].sum())
+            score = v - abs(i - (gh - n) / 2) * 1e-3
+            if best is None or score > best[0]:
+                best = (score, v, (iw - cw) / 2, i * ih / gh)
+    _, kept, x0, y0 = best
+    x0, y0 = min(max(0, x0), iw - cw), min(max(0, y0), ih - ch)
+    k = max(1, min(k, int(cw // W0)))
+    return down(img, (W0 * k, H0 * k), box=(x0, y0, x0 + cw, y0 + ch)), k, 1 - kept / tot
+
 class JobError(Exception):
     pass
 
@@ -1453,6 +1543,17 @@ def run(job):
     os.makedirs(out, exist_ok=True)
     results, previews = [], []
     needs = []
+    dsizes = [(s["width"], s["height"]) for p in chosen for s in p["sizes"] if design_eligible(s)]
+    dplan = plan_designs(dsizes, copy, rtl) if not job.get("no_designs") else []
+    dmap = {sz: d for d in dplan for sz in d["sizes"]}
+    dfiles = job.get("designs") or {}
+    dimgs, redo = {}, set()
+    for d in dplan:
+        f_ = dfiles.get(d["id"])
+        if f_ and os.path.exists(rel(f_)):
+            dimgs[d["id"]] = Image.open(rel(f_)).convert("RGB")
+    if job.get("_plan_only"):
+        return {"designs": dplan}
     for p in chosen:
         pcolors = dict(colors, **p.get("brand", {}).get("colors", {}))
         plogo = None if p.get("noLogo") else logo
@@ -1484,6 +1585,17 @@ def run(job):
                 img, warns = render_round_logo(logo, brand.get("logo_bg") or pcolors.get("primary") or pcolors["background"], W, mc)
                 data, q = encode(img, "jpg")
                 fname = f"{p['id']}/{name}_logo_round.jpg"
+            elif design_eligible(s) and dmap.get(f"{W0}x{H0}", {}).get("id") in dimgs:
+                did_ = dmap[f"{W0}x{H0}"]["id"]
+                img, k, lost = crop_design(dimgs[did_], W0, H0, k)
+                W, H = W0 * k, H0 * k
+                warns, tstate = [], "ok"
+                if lost > 0.04:
+                    warns.append(f"design cut: {round(lost * 100)}% of its content is outside the crop")
+                    redo.add(did_)
+                data, q = encode(img, fmt, s.get("maxKB") if k == 1 else None)
+                sid = "" if s["id"] == f"{W0}x{H0}" else f"{s['id']}_"
+                fname = f"{p['id']}/{name}_{p['id']}_{sid}{W0}x{H0}" + (f"@{k}x" if k > 1 else "") + ".jpg"
             else:
                 logo_only = s.get("logoOnly") and plogo is not None
                 art_only = (not logo_only) and s.get("artOnly") and not job.get("text_on_image_only_slots")
@@ -1637,7 +1749,17 @@ def run(job):
                   + f": same scene, style, colours and lighting. Main subject compact and complete, fully inside the {'LEFT' if rtl else 'RIGHT'} half"
                   + (" (or the top half for portrait)" if b == "portrait" else "")
                   + f". The other half is a clean, plain backdrop of the scene's main colour (solid or very soft gradient) with nothing in it: no props, no scenery, no light rays, no text."} for b, v in buckets.items()]
-    return {"report_fa": report_fa(results, os.path.basename(zpath)), "needs_art": needs_art, "zip": zpath, "preview": os.path.join(out, "preview.png"), "count": len(results), "rtl": rtl, "raqm": RAQM, "unknown_placements": missing, "files": results}
+    missing_designs = [d for d in dplan if d["id"] not in dimgs]
+    redo_designs = []
+    for d in dplan:
+        if d["id"] in redo:
+            cut = sorted({r["size"] for r in results if r["size"] in d["sizes"] and any("design cut" in w for w in r["warnings"])})
+            wf, hf = d["safe"]
+            redo_designs.append(dict(d, cut_in=cut, edit_prompt=(
+                f"Edit the attached banner: keep everything exactly the same (same Persian text letter by letter, element, button, logo, colours, style), "
+                f"only re-frame it so that ALL text, the button, the logo and the main element sit inside the centred {round(wf * 100)}% of the width and "
+                f"{round(hf * 100)}% of the height. Fill the freed edges only with the same background. Same {d['size']} canvas.")))
+    return {"report_fa": report_fa(results, os.path.basename(zpath)), "missing_designs": missing_designs, "redo_designs": redo_designs, "needs_art": needs_art, "zip": zpath, "preview": os.path.join(out, "preview.png"), "count": len(results), "rtl": rtl, "raqm": RAQM, "unknown_placements": missing, "files": results}
 
 
 if __name__ == "__main__":
@@ -1645,6 +1767,7 @@ if __name__ == "__main__":
     with open(jp, encoding="utf-8") as f:
         job = json.load(f)
     job["_path"] = jp
+    job["_plan_only"] = "--plan" in sys.argv
     try:
         res = run(job)
     except JobError as e:
