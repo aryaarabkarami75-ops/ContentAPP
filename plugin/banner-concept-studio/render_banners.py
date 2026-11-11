@@ -1303,7 +1303,9 @@ def render_round_logo(logo, bg_hex, size=512, content=None):
     """Menchers round logo, rebuilt from the kit's 'file 1' template: file 2 placed at (0,58), the kit's
     overlay light (overlay blend, 68%) at (24,268), clipped by a 511px circle at (1,99), with the group's
     effects (3 inner shadows + top gradient overlay). Transparent 512x512, cut at the bottom like the kit."""
-    if content and content.get("mode") == "element":
+    if content and content.get("mode") == "design":
+        f2, warn = crop_design(content["image"].convert("RGB"), 512, 512, 1)[0].convert("RGBA"), []
+    elif content and content.get("mode") == "element":
         f2, warn = menchers_element_file2(content.get("element"), content.get("text"), bg_hex, content.get("colors", {}), 512, content.get("layout", "stack"))
     else:
         f2, warn = menchers_file2(logo, bg_hex, 512)
@@ -1380,10 +1382,9 @@ DESIGN_MIN, DESIGN_MAX = 0.5, 2.4
 CANVASES = {"wide": (1536, 1024), "square": (1024, 1024), "tall": (1024, 1536)}
 
 
-def design_eligible(s):
-    r = s["width"] / s["height"]
-    return (s.get("kind") != "round-logo" and not s.get("artOnly") and not s.get("logoOnly")
-            and DESIGN_MIN <= r <= DESIGN_MAX)
+def design_eligible(s, text_all=False):
+    """Every slot that carries text is designed by the image model (the script never draws text)."""
+    return s.get("kind") != "round-logo" and not s.get("logoOnly") and (text_all or not s.get("artOnly"))
 
 
 def plan_designs(sizes, copy, rtl=True):
@@ -1408,20 +1409,40 @@ def plan_designs(sizes, copy, rtl=True):
         did = f"d{i}"
         plan.append({"id": did, "canvas": cname, "size": "%dx%d" % CANVASES[cname], "sizes": ["%dx%d" % t for t in g],
                      "safe": [round(wf, 3), round(hf, 3)], "file": f"/mnt/data/design_{did}.png",
-                     "prompt": design_prompt(cname, wf, hf, copy, rtl)})
+                     "prompt": design_prompt(cname, wf, hf, copy, rtl, rmin, rmax)})
     return plan
 
 
-def design_prompt(cname, wf, hf, copy, rtl=True):
+def menchers_design(mc, colors):
+    """Content of the Menchers round logo (file 2 of the kit): designed by the image model, framed by the script."""
+    bg = mc.get("bg") or colors.get("bg") or colors.get("primary") or colors.get("background")
+    return {"id": "menchers", "canvas": "square", "size": "1024x1024", "sizes": ["512x512"], "safe": [0.71, 0.71],
+            "file": "/mnt/data/design_menchers.png",
+            "prompt": ("A square campaign token for an in-game ad, on a perfectly flat plain " + str(bg) + " background filling the whole square. "
+                       f'Big sticker-style Persian (Farsi, right-to-left) headline "{mc.get("text", "")}", spelled exactly letter by letter, '
+                       "in a heavy rounded display typeface with a thick contrasting outline, a 3D extruded drop and soft shadow, on 1 to 3 short lines. "
+                       "The campaign's main object from the approved visual, big and detailed 3D, "
+                       + ("large and behind the headline. " if mc.get("layout") == "behind" else "under the headline, the headline slightly overlapping its top. ")
+                       + "Headline and object together fill the centred circle whose diameter is 71% of the square, touching its edge; "
+                       "nothing outside that circle except the flat background. No frame, no ring, no other text, letters, numbers or logos.")}
+
+
+def design_prompt(cname, wf, hf, copy, rtl=True, rmin=1.0, rmax=1.0):
     shape = {"wide": "landscape 3:2", "square": "square 1:1", "tall": "portrait 2:3"}[cname]
     lines = [f"A finished, high-end {shape} advertising banner in exactly the style, colours, lighting and main element of the approved campaign visual. "]
     lines.append(f'Persian (Farsi, right-to-left) text, spelled exactly, letter by letter: headline "{copy.get("headline", "")}"')
     if copy.get("sub"):
         lines.append(f'; smaller line "{copy["sub"]}"')
     lines.append(f'; a call-to-action button that reads "{copy.get("cta", "")}". If a logo image is attached, place it small and unchanged.')
+    if (copy.get("highlight") or "").strip() and copy["highlight"] in copy.get("headline", ""):
+        lines.append(f' Emphasise "{copy["highlight"]}" inside the headline (for example in a bright rounded pill).')
     lines.append(" Bold modern Persian typeface, big readable headline with soft depth and shadow, main element big and complete, text and element never overlapping.")
     if wf < 0.97 or hf < 0.97:
         lines.append(f" IMPORTANT: put ALL text, the button, the logo and the main element inside the centred area that is {round(wf * 100)}% of the width and {round(hf * 100)}% of the height; outside that area only continue the background (no text, no objects), because the edges will be cropped.")
+    if rmin >= 2.4:
+        lines.append(f" This is a very wide strip banner (about {rmin:.1f}:1 to {rmax:.1f}:1): lay the logo, headline, element and button out in ONE horizontal row across the band; keep the headline on one line (two at most), large enough to fill the band's height.")
+    elif rmax <= 0.5:
+        lines.append(f" This is a very tall, narrow skyscraper banner (about 1:{1 / rmax:.1f}): stack logo, headline (short lines), element and button vertically inside the narrow column.")
     lines.append(" No other words, letters, numbers or watermarks.")
     return "".join(lines)
 
@@ -1496,7 +1517,7 @@ def fa(n):
     return str(n).translate(FA_DIG)
 
 
-def report_fa(results, zip_name):
+def report_fa(results, zip_name, missing=()):
     lines = [f"✅ {fa(len(results))} فایل ساخته شد."]
     by = {}
     for r in results:
@@ -1518,6 +1539,9 @@ def report_fa(results, zip_name):
         lines.append("⚠️ بیشتر از سقف حجم: " + "، ".join(fa(r["size"].replace("x", "×")) for r in big))
     if any(r.get("scale", 1) > 1 for r in results):
         lines.append("🔍 رندر کامل: هر بنر با همان چیدمان و نسبت، در ۲ تا ۴ برابر پیکسل ساخته شده (در نام فایل ‎@2x / @3x / @4x‎). برای آپلود، به اندازهٔ اصلی کوچکش کن.")
+    miss = [sz for d in missing for sz in d["sizes"]]
+    if miss:
+        lines.append("⚠️ طرح این سایزها ساخته نشد و فایلشان در ZIP نیست: " + "، ".join(fa(x.replace("x", "×")) for x in miss))
     lines.append(f"📦 فایل ZIP: {zip_name}")
     return "\n".join(lines)
 
@@ -1543,9 +1567,13 @@ def run(job):
     os.makedirs(out, exist_ok=True)
     results, previews = [], []
     needs = []
-    dsizes = [(s["width"], s["height"]) for p in chosen for s in p["sizes"] if design_eligible(s)]
-    dplan = plan_designs(dsizes, copy, rtl) if not job.get("no_designs") else []
-    dmap = {sz: d for d in dplan for sz in d["sizes"]}
+    text_all = bool(job.get("text_on_image_only_slots"))
+    dsizes = [(s["width"], s["height"]) for p in chosen for s in p["sizes"] if design_eligible(s, text_all)]
+    dplan = plan_designs(dsizes, copy, rtl)
+    mc0 = job.get("menchers") or {}
+    if any(s.get("kind") == "round-logo" for p in chosen for s in p["sizes"]) and mc0.get("mode") == "element":
+        dplan.append(menchers_design(mc0, dict(colors, bg=(brand.get("logo_bg")))))
+    dmap = {sz: d for d in dplan if d["id"] != "menchers" for sz in d["sizes"]}
     dfiles = job.get("designs") or {}
     dimgs, redo = {}, set()
     for d in dplan:
@@ -1571,7 +1599,11 @@ def run(job):
             if s.get("kind") == "round-logo":
                 tstate = "logo"
                 mc = dict(job.get("menchers") or {})
-                if mc.get("mode") == "element":
+                if mc.get("mode") == "element" and "menchers" in dimgs:
+                    mc = {"mode": "design", "image": dimgs["menchers"]}
+                elif mc.get("mode") == "element":
+                    continue  # token not designed yet: the script never draws the headline itself (see missing_designs)
+                if False:
                     if mc.get("element") and os.path.exists(rel(mc["element"])):
                         e_img = Image.open(rel(mc["element"]))
                         if e_img.mode == "RGBA" and e_img.getchannel("A").getextrema()[0] < 250:
@@ -1583,9 +1615,9 @@ def run(job):
                         mc["element"] = pr[1] if pr else smart_crop(arts[0], 512, 512).convert("RGBA")
                     mc["colors"] = pcolors
                 img, warns = render_round_logo(logo, brand.get("logo_bg") or pcolors.get("primary") or pcolors["background"], W, mc)
-                data, q = encode(img, "jpg")
-                fname = f"{p['id']}/{name}_logo_round.jpg"
-            elif design_eligible(s) and dmap.get(f"{W0}x{H0}", {}).get("id") in dimgs:
+                data, q = encode(img, "png")  # transparent round logo stays PNG
+                fname = f"{p['id']}/{name}_logo_round.png"
+            elif design_eligible(s, text_all) and dmap.get(f"{W0}x{H0}", {}).get("id") in dimgs:
                 did_ = dmap[f"{W0}x{H0}"]["id"]
                 img, k, lost = crop_design(dimgs[did_], W0, H0, k)
                 W, H = W0 * k, H0 * k
@@ -1593,6 +1625,20 @@ def run(job):
                 if lost > 0.04:
                     warns.append(f"design cut: {round(lost * 100)}% of its content is outside the crop")
                     redo.add(did_)
+                data, q = encode(img, fmt, s.get("maxKB") if k == 1 else None)
+                sid = "" if s["id"] == f"{W0}x{H0}" else f"{s['id']}_"
+                fname = f"{p['id']}/{name}_{p['id']}_{sid}{W0}x{H0}" + (f"@{k}x" if k > 1 else "") + ".jpg"
+            elif design_eligible(s, text_all):
+                continue  # no design yet: never fall back to script-drawn text (reported in missing_designs)
+            elif s.get("artOnly") and not (s.get("logoOnly") and plogo is not None):
+                # image-only slot: the approved text-free picture, cropped (never padded)
+                r_ = W0 / H0
+                src_ = min(arts, key=lambda a_: abs(math.log((a_.width / a_.height) / r_)))
+                if job.get("flip_art"):
+                    src_ = src_.transpose(Image.FLIP_LEFT_RIGHT)
+                img, k, _ = crop_design(src_, W0, H0, k)
+                W, H = W0 * k, H0 * k
+                warns, tstate = ["image only: the platform shows the title/CTA"], "image-only"
                 data, q = encode(img, fmt, s.get("maxKB") if k == 1 else None)
                 sid = "" if s["id"] == f"{W0}x{H0}" else f"{s['id']}_"
                 fname = f"{p['id']}/{name}_{p['id']}_{sid}{W0}x{H0}" + (f"@{k}x" if k > 1 else "") + ".jpg"
@@ -1759,7 +1805,7 @@ def run(job):
                 f"Edit the attached banner: keep everything exactly the same (same Persian text letter by letter, element, button, logo, colours, style), "
                 f"only re-frame it so that ALL text, the button, the logo and the main element sit inside the centred {round(wf * 100)}% of the width and "
                 f"{round(hf * 100)}% of the height. Fill the freed edges only with the same background. Same {d['size']} canvas.")))
-    return {"report_fa": report_fa(results, os.path.basename(zpath)), "missing_designs": missing_designs, "redo_designs": redo_designs, "needs_art": needs_art, "zip": zpath, "preview": os.path.join(out, "preview.png"), "count": len(results), "rtl": rtl, "raqm": RAQM, "unknown_placements": missing, "files": results}
+    return {"report_fa": report_fa(results, os.path.basename(zpath), missing_designs), "missing_designs": missing_designs, "redo_designs": redo_designs, "needs_art": needs_art, "zip": zpath, "preview": os.path.join(out, "preview.png"), "count": len(results), "rtl": rtl, "raqm": RAQM, "unknown_placements": missing, "files": results}
 
 
 if __name__ == "__main__":
